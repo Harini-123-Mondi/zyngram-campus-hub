@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.env
+server/campus-data.json
+server/campus-data.json.tmp
