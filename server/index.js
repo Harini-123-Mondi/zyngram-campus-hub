@@ -6,6 +6,7 @@ import "dotenv/config";
 import express from "express";
 import { ObjectId } from "mongodb";
 import PDFDocument from "pdfkit";
+import QRCode from "qrcode";
 import { courseIntroductions, courseModules } from "./course-curriculum.js";
 import * as database from "./database.js";
 import { careerPaths, mockInterviewQuestions, platformSeeds, roleAccounts } from "./platform-data.js";
@@ -20,6 +21,11 @@ const dataPath = process.env.CAMPUS_DATA_PATH || path.join(__dirname, "campus-da
 const PORT = Number(process.env.PORT || 4000);
 const SESSION_TTL = 1000 * 60 * 60 * 8;
 const SESSION_COOKIE = "zyngram_session";
+const hashSessionToken = (token) => crypto.createHash("sha256").update(token).digest("hex");
+const revokeUserSessions = async (userId) => {
+  const collection = await database.getPlatformCollection("user_sessions");
+  await collection.deleteMany({ userId });
+};
 const roleNamesForApi = {
   student: "Campus trainee",
   trainer: "Senior learning mentor",
@@ -28,7 +34,6 @@ const roleNamesForApi = {
   administrator: "Hub administrator"
 };
 const app = express();
-const sessions = new Map();
 const loginAttempts = new Map();
 const assistantRequests = new Map();
 const apiRateWindows = new Map();
@@ -40,7 +45,7 @@ app.use((req, res, next) => {
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "same-origin",
     "X-Frame-Options": "DENY",
-    "Permissions-Policy": "camera=(), microphone=(), geolocation=()"
+    "Permissions-Policy": "camera=(self), microphone=(), geolocation=()"
   });
   next();
 });
@@ -368,18 +373,19 @@ app.get("/api/demo/secure/modules", apiKeyDemoGate("api-demo-secure-modules"), a
   return res.json({ demo: true, modules: modules.map(({ id, title, category }) => ({ id, title, category })) });
 }));
 
-const authenticateSession = (req, res, next) => {
-  if (req.path === "/health" || req.path === "/auth/login" || req.path === "/auth/logout") return next();
+const authenticateSession = asyncRoute(async (req, res, next) => {
+  if (req.path === "/health" || req.path === "/auth/login" || req.path === "/auth/logout"
+    || req.path.startsWith("/public/portfolio/")) return next();
   const token = getCookie(req, SESSION_COOKIE);
-  const session = token && sessions.get(token);
-  if (!session || session.expiresAt < Date.now()) {
-    if (token) sessions.delete(token);
+  const session = token ? await database.getPlatformItem("user_sessions", { tokenHash: hashSessionToken(token) }) : null;
+  if (!session || session.expiresAt < new Date()) {
+    if (session) await database.deletePlatformItem("user_sessions", { tokenHash: session.tokenHash });
     return res.status(401).json({ error: "Please sign in to continue." });
   }
   const user = data.users.find((candidate) => candidate.id === session.userId);
   if (!user) return res.status(401).json({ error: "Your session is no longer valid. Please sign in again." });
   if (user.active === false) {
-    sessions.delete(token);
+    await database.deletePlatformItem("user_sessions", { tokenHash: session.tokenHash });
     return res.status(403).json({ error: "This account is inactive. Contact your campus administrator." });
   }
   req.user = publicUser(user);
@@ -387,7 +393,7 @@ const authenticateSession = (req, res, next) => {
     return res.status(403).json({ error: "Choose a new password to continue.", code: "PASSWORD_SETUP_REQUIRED" });
   }
   return next();
-};
+});
 
 app.get("/api/admin/apis", authenticateSession, allowedRoles("administrator"), asyncRoute(async (_req, res) => {
   return res.json(await database.getPlatformItems("api_registry", {}, { module: 1, name: 1 }));
@@ -673,7 +679,11 @@ app.post("/api/auth/login", asyncRoute(async (req, res) => {
   const token = crypto.randomBytes(32).toString("hex");
   const settings = await getAdminSettings();
   const sessionTtl = settings.sessionHours * 60 * 60 * 1000;
-  sessions.set(token, { userId: user.id, expiresAt: now + sessionTtl });
+  const tokenHash = hashSessionToken(token);
+  const sessionExpiresAt = new Date(now + sessionTtl);
+  await database.createPlatformItem("user_sessions", {
+    id: tokenHash, tokenHash, userId: user.id, expiresAt: sessionExpiresAt
+  });
   res.cookie(SESSION_COOKIE, token, {
     httpOnly: true, sameSite: "strict", secure: process.env.NODE_ENV === "production",
     path: "/", maxAge: sessionTtl
@@ -718,12 +728,12 @@ app.post("/api/auth/register", asyncRoute(async (req, res) => {
   return res.status(201).json({ zinId: user.zinId, email: user.email });
 }));
 
-app.post("/api/auth/logout", (req, res) => {
+app.post("/api/auth/logout", asyncRoute(async (req, res) => {
   const token = getCookie(req, SESSION_COOKIE);
-  if (token) sessions.delete(token);
+  if (token) await database.deletePlatformItem("user_sessions", { tokenHash: hashSessionToken(token) });
   res.setHeader("Set-Cookie", `${SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${process.env.NODE_ENV === "production" ? "; Secure" : ""}`);
   res.json({ ok: true });
-});
+}));
 
 app.use("/api", authenticateSession);
 
@@ -868,12 +878,13 @@ app.get("/api/dashboard", asyncRoute(async (req, res) => {
   const records = data.attendance.filter((entry) => req.user.role === "student"
     ? entry.studentId === req.user.id
     : req.user.role !== "trainer" || trainerOwnsCourse(courseFor(entry.courseId), req.user));
-  const [catalogLessons, progress, assignments, upcomingClasses, gamification, modules, moduleAttempts] = await Promise.all([
+  const [catalogLessons, progress, assignments, assignmentSubmissions, upcomingClasses, gamification, modules, moduleAttempts] = await Promise.all([
     database.getPlatformItems("lessons"),
     database.getPlatformItems("lesson_progress", { userId: req.user.id, completed: true }),
     database.getPlatformItems("assignments", req.user.role === "student"
       ? { courseId: { $in: data.courses.filter((course) => course.enrolled.includes(req.user.id)).map((course) => course.id) } }
       : req.user.role === "trainer" ? { trainerId: req.user.id } : {}),
+    database.getPlatformItems("assignment_submissions", req.user.role === "student" ? { studentId: req.user.id } : {}),
     database.getPlatformItems("timetable", req.user.role === "trainer"
       ? { $or: [{ trainerId: req.user.id }, { courseId: { $in: trainerCourses(req.user).map((course) => course.id) } }] }
       : {}, { day: 1, startTime: 1 }),
@@ -895,6 +906,35 @@ app.get("/api/dashboard", asyncRoute(async (req, res) => {
         : courseLessons.length && done ? Math.round(done / courseLessons.length * 100) : course.progress;
       return { ...course, progress: courseProgress };
     });
+  const upcomingWithDates = upcomingClasses.filter((item) => item.status !== "completed").map((item) => {
+    const weekday = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].indexOf(item.day);
+    if (weekday < 0) return null;
+    const now = new Date();
+    const [hours, minutes] = item.startTime.split(":").map(Number);
+    let daysUntil = (weekday - now.getDay() + 7) % 7;
+    if (daysUntil === 0 && (hours < now.getHours() || (hours === now.getHours() && minutes <= now.getMinutes()))) daysUntil = 7;
+    const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() + daysUntil, hours, minutes);
+    return { ...item, course: courseFor(item.courseId)?.title || item.title, date: date.toISOString() };
+  }).filter(Boolean).sort((left, right) => left.date.localeCompare(right.date));
+  const openAssignments = req.user.role === "student" ? assignments.filter((assignment) =>
+    !assignmentSubmissions.some((submission) => submission.assignmentId === assignment.id))
+    .map((assignment) => ({
+      id: assignment.id, title: assignment.title, due: assignment.due,
+      course: courseFor(assignment.courseId)?.title || "Course assignment", status: "pending"
+    })) : [];
+  const upcomingTasks = [
+    ...tasks.filter((task) => task.status !== "submitted" && isValidDate(task.due)),
+    ...openAssignments.filter((assignment) => isValidDate(assignment.due))
+  ].sort((left, right) => left.due.localeCompare(right.due));
+  const weeklyActivity = Array.from({ length: 7 }, (_unused, index) => {
+    const date = new Date();
+    date.setHours(0, 0, 0, 0);
+    date.setDate(date.getDate() - (6 - index));
+    const day = date.toISOString().slice(0, 10);
+    const lessonsDone = progress.filter((item) => String(item.completedAt || "").slice(0, 10) === day).length;
+    const attendanceCount = records.filter((item) => item.date === day && item.status !== "absent").length;
+    return { day: date.toLocaleDateString("en", { weekday: "short" }), count: lessonsDone + attendanceCount };
+  });
   res.json({
     user: req.user,
     courses,
@@ -908,8 +948,17 @@ app.get("/api/dashboard", asyncRoute(async (req, res) => {
       pendingReviews: data.tasks.filter((task) => req.user.role !== "trainer" || trainerOwnsCourse(courseFor(task.courseId), req.user))
         .flatMap((task) => task.submissions).filter((item) => item.review === "submitted").length
     },
-    upcomingClasses: upcomingClasses.slice(0, 4).map((item) => ({ ...item, course: courseFor(item.courseId)?.title || item.title })),
-    pendingAssignments: tasks.filter((task) => task.status !== "submitted").length + assignments.length,
+    upcomingClasses: upcomingWithDates.slice(0, 4),
+    nextClass: upcomingWithDates[0] || null,
+    nextDeadline: upcomingTasks.find((task) => task.due >= new Date().toISOString().slice(0, 10)) || null,
+    weeklyActivity,
+    weeklyActiveDays: weeklyActivity.filter((item) => item.count > 0).length,
+    nextAction: upcomingTasks[0]
+      ? { kind: "assignment", title: `Continue ${upcomingTasks[0].title}`, detail: `${upcomingTasks[0].course} · due ${upcomingTasks[0].due}`, target: "tasks" }
+      : courses.find((course) => course.progress < 100)
+        ? { kind: "course", title: `Keep learning: ${courses.find((course) => course.progress < 100).title}`, detail: `${courses.find((course) => course.progress < 100).progress}% complete`, target: "courses" }
+        : { kind: "explore", title: "Explore a new learning opportunity", detail: "Browse courses and placement recommendations.", target: "courses" },
+    pendingAssignments: upcomingTasks.length,
     learningProgress: courses.length ? Math.round(courses.reduce((total, course) => total + course.progress, 0) / courses.length) : 0,
     learningPoints: gamification?.points || 0,
     badges: gamification?.badges || []
@@ -1504,10 +1553,11 @@ const timetableConflict = (items, candidate, excludedId = "") => items.find((ite
 app.get("/api/events", asyncRoute(async (req, res) => {
   const today = new Date().toISOString().slice(0, 10);
   const events = await database.getPlatformItems("events", { date: { $gte: today } }, { date: 1, startTime: 1 });
-  return res.json(events.map(({ registrations = [], ...event }) => ({
+  return res.json(events.map(({ registrations = [], checkedInUsers = [], ...event }) => ({
     ...event,
     registrationCount: registrations.length,
-    registered: registrations.includes(req.user.id)
+    registered: registrations.includes(req.user.id),
+    checkedIn: checkedInUsers.includes(req.user.id)
   })));
 }));
 app.post("/api/events", allowedRoles("coordinator", "administrator"), asyncRoute(async (req, res) => {
@@ -1555,6 +1605,40 @@ app.post("/api/events/:eventId/register", allowedRoles("student"), asyncRoute(as
   );
   if (!result.matchedCount) return res.status(409).json({ error: "This event is full. Please choose another campus event." });
   return res.json({ registered: true, registrationCount: (event.registrations || []).length + 1 });
+}));
+app.post("/api/events/:eventId/check-in-code", allowedRoles("coordinator", "administrator"), asyncRoute(async (req, res) => {
+  const event = await database.getPlatformItem("events", { _id: req.params.eventId });
+  if (!event || event.date !== new Date().toISOString().slice(0, 10)) {
+    return res.status(400).json({ error: "Event check-in codes can only be created on the event day." });
+  }
+  const code = crypto.randomBytes(32).toString("base64url");
+  const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
+  await database.createPlatformItem("checkin_tokens", {
+    id: crypto.randomUUID(), tokenHash: crypto.createHash("sha256").update(code).digest("hex"),
+    kind: "event", eventId: event.id, expiresAt, createdBy: req.user.id
+  });
+  return res.status(201).json({
+    code, expiresAt: expiresAt.toISOString(),
+    qrDataUrl: await QRCode.toDataURL(code, { errorCorrectionLevel: "M", margin: 2, width: 240 })
+  });
+}));
+app.post("/api/events/:eventId/check-in", allowedRoles("student"), asyncRoute(async (req, res) => {
+  const code = typeof req.body?.code === "string" ? req.body.code : "";
+  const tokenHash = crypto.createHash("sha256").update(code).digest("hex");
+  const token = await database.getPlatformItem("checkin_tokens", { tokenHash, kind: "event", eventId: req.params.eventId });
+  if (!token || token.expiresAt <= new Date()) return res.status(401).json({ error: "This event QR code is invalid or has expired." });
+  const events = await database.getPlatformCollection("events");
+  const event = await events.findOne({ _id: req.params.eventId, registrations: req.user.id });
+  if (!event || event.date !== new Date().toISOString().slice(0, 10)) {
+    return res.status(403).json({ error: "Register for this event on its event page before checking in." });
+  }
+  if (event.checkedInUsers?.includes(req.user.id)) return res.status(409).json({ error: "You are already checked in for this event." });
+  const result = await events.updateOne(
+    { _id: event._id, registrations: req.user.id, checkedInUsers: { $ne: req.user.id } },
+    { $addToSet: { checkedInUsers: req.user.id }, $set: { updatedAt: new Date() } }
+  );
+  if (!result.modifiedCount) return res.status(409).json({ error: "You are already checked in for this event." });
+  return res.json({ checkedIn: true, event: event.title });
 }));
 app.delete("/api/events/:eventId", allowedRoles("coordinator", "administrator"), asyncRoute(async (req, res) => {
   const events = await database.getPlatformCollection("events");
@@ -1688,6 +1772,7 @@ app.post("/api/community/groups", allowedRoles("student"), asyncRoute(async (req
   return res.status(201).json({ ...group, memberCount: 1, joined: true });
 }));
 app.get("/api/notifications", asyncRoute(async (req, res) => {
+  const today = new Date().toISOString().slice(0, 10);
   const courseIds = req.user.role === "student"
     ? data.courses.filter((course) => course.enrolled.includes(req.user.id)).map((course) => course.id)
     : req.user.role === "trainer" ? trainerCourses(req.user).map((course) => course.id) : [];
@@ -1699,10 +1784,27 @@ app.get("/api/notifications", asyncRoute(async (req, res) => {
       ? await database.getPlatformItems("assignment_submissions", { studentId: req.user.id })
       : [];
   const events = await database.getPlatformItems("events", { date: { $gte: new Date().toISOString().slice(0, 10) } }, { date: 1 });
+  const [placementDrives, placementApplications] = req.user.role === "student" ? await Promise.all([
+    database.getPlatformItems("placement_drives", { status: "published", registrationEnd: { $gte: today } }, { registrationEnd: 1 }),
+    database.getPlatformItems("placement_applications", { studentId: req.user.id })
+  ]) : [[], []];
+  const timetable = await database.getPlatformItems("timetable", req.user.role === "trainer"
+    ? { $or: [{ trainerId: req.user.id }, { courseId: { $in: courseIds } }] }
+    : req.user.role === "student" ? { courseId: { $in: courseIds } } : {});
+  const upcomingClassNotices = timetable.filter((item) => item.status !== "completed").map((item) => {
+    const weekday = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].indexOf(item.day);
+    if (weekday < 0) return null;
+    const now = new Date();
+    const [hours, minutes] = item.startTime.split(":").map(Number);
+    let daysUntil = (weekday - now.getDay() + 7) % 7;
+    if (daysUntil === 0 && (hours < now.getHours() || (hours === now.getHours() && minutes <= now.getMinutes()))) daysUntil = 7;
+    const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() + daysUntil, hours, minutes);
+    return { id: `class-${item.id}`, kind: "class", title: `Class reminder: ${item.title}`, detail: `${item.startTime}–${item.endTime} · ${item.room}`, date: date.toISOString().slice(0, 10), dateTime: date };
+  }).filter((item) => item && item.date >= today).sort((left, right) => left.dateTime - right.dateTime).slice(0, 6);
   const notices = [
     ...data.announcements.filter((item) => courseAnnouncementVisible(item, req.user)).slice(0, 4).map((item) => ({ id: `announcement-${item.id}`, kind: "announcement", title: item.title, detail: item.body, date: item.date })),
-    ...data.tasks.filter((task) => task.status !== "submitted" && courseFor(task.courseId)?.enrolled.includes(req.user.id)).map((task) => ({ id: `task-${task.id}`, kind: "assignment", title: `Due soon: ${task.title}`, detail: courseFor(task.courseId)?.title || "Course assignment", date: task.due })),
-    ...assignments.map((item) => ({ id: `assignment-${item.id}`, kind: "assignment", title: `Assignment: ${item.title}`, detail: item.detail, date: item.due })),
+    ...data.tasks.filter((task) => task.status !== "submitted" && task.due >= today && courseFor(task.courseId)?.enrolled.includes(req.user.id)).map((task) => ({ id: `task-${task.id}`, kind: "assignment", title: `Due soon: ${task.title}`, detail: courseFor(task.courseId)?.title || "Course assignment", date: task.due })),
+    ...assignments.filter((item) => item.due >= today && (req.user.role !== "student" || !submissions.some((submission) => submission.assignmentId === item.id))).map((item) => ({ id: `assignment-${item.id}`, kind: "assignment", title: `Assignment: ${item.title}`, detail: item.detail, date: item.due })),
     ...submissions.map((submission) => {
       const assignment = assignments.find((item) => item.id === submission.assignmentId);
       return {
@@ -1718,9 +1820,12 @@ app.get("/api/notifications", asyncRoute(async (req, res) => {
       };
     }),
     ...events.filter((item) => req.user.role !== "student" || item.registrations?.includes(req.user.id)).map((item) => ({ id: `event-${item.id}`, kind: "event", title: `Campus event: ${item.title}`, detail: `${item.date} · ${item.startTime} · ${item.location}`, date: item.date })),
-    ...(await database.getPlatformItems("timetable", req.user.role === "trainer"
-      ? { $or: [{ trainerId: req.user.id }, { courseId: { $in: courseIds } }] }
-      : {})).map((item) => ({ id: `class-${item.id}`, kind: "class", title: `Class reminder: ${item.title}`, detail: `${item.day} · ${item.startTime}–${item.endTime} · ${item.room}`, date: item.day }))
+    ...placementDrives.filter((drive) => !placementApplications.some((application) => application.driveId === drive.id))
+      .map((drive) => ({ id: `drive-${drive.id}`, kind: "placement", title: `Placement drive registration: ${drive.roleTitle}`, detail: `${drive.companyName} · closes ${drive.registrationEnd}`, date: drive.registrationEnd })),
+    ...upcomingClassNotices,
+    ...(req.user.role === "student" ? (await database.getPlatformItems("placement_interviews", { studentId: req.user.id, status: { $in: ["scheduled", "rescheduled"] } }))
+      .filter((item) => new Date(item.scheduledAt) >= new Date())
+      .map((item) => ({ id: `interview-${item.id}`, kind: "placement", title: `Upcoming interview: ${item.roundType}`, detail: `${item.venue || "Interview"} · ${item.meetingLink || "Check your placement page"}`, date: String(item.scheduledAt).slice(0, 10) })) : [])
   ];
   notices.push(...(await database.getPlatformItems("notifications", { userId: req.user.id }))
     .map(({ id, kind, title, detail, date }) => ({ id, kind, title, detail, date: String(date).slice(0, 10) })));
@@ -2201,6 +2306,44 @@ app.get("/api/placement/opportunities", allowedRoles("student"), asyncRoute(asyn
     && activeCompanyIds.has(drive.companyId));
   return res.json({ jobs: eligibleJobs, drives: eligibleDrives, applications });
 }));
+app.get("/api/recommendations", allowedRoles("student"), asyncRoute(async (req, res) => {
+  const [profile, jobs, drives, companies, applications] = await Promise.all([
+    placementProfileFor(req.user.id),
+    database.getPlatformItems("placement_jobs", { status: "published", deadline: { $gte: new Date().toISOString().slice(0, 10) } }),
+    database.getPlatformItems("placement_drives", { status: "published", registrationEnd: { $gte: new Date().toISOString().slice(0, 10) } }),
+    database.getPlatformItems("placement_companies", { status: "active" }),
+    database.getPlatformItems("placement_applications", { studentId: req.user.id })
+  ]);
+  const skills = [...new Set([...(profile.skills || []), ...(req.user.skills || "").split(",")].map((skill) => skill.trim().toLowerCase()).filter(Boolean))];
+  const courseRecommendations = data.courses.filter((course) => course.status !== "archived" && !course.enrolled.includes(req.user.id))
+    .map((course) => {
+      const terms = `${course.title} ${course.description} ${course.category}`.toLowerCase();
+      const matchingSkills = skills.filter((skill) => terms.includes(skill));
+      return {
+        id: course.id, kind: "course", title: course.title, detail: course.description,
+        reason: matchingSkills.length ? `Matches your ${matchingSkills.slice(0, 3).join(", ")} skills` : `${course.category} course to broaden your skills`,
+        target: "courses", score: matchingSkills.length
+      };
+    }).sort((left, right) => right.score - left.score).slice(0, 4);
+  const activeCompanyIds = new Set(companies.map((company) => company.id));
+  const placementRecommendations = [
+    ...jobs.filter((job) => activeCompanyIds.has(job.companyId)).map((item) => ({ ...item, recommendationKind: "job", date: item.deadline })),
+    ...drives.filter((drive) => activeCompanyIds.has(drive.companyId)).map((item) => ({ ...item, title: item.roleTitle, recommendationKind: "drive", date: item.registrationEnd }))
+  ].filter((item) => {
+    const alreadyApplied = applications.some((application) => item.recommendationKind === "job"
+      ? application.jobId === item.id : application.driveId === item.id);
+    return !alreadyApplied && placementEligibility(profile) === "eligible" && profile.cgpa >= (item.minCgpa || 6);
+  }).map((item) => {
+    const matchingSkills = (item.skills || []).filter((skill) => skills.includes(skill.toLowerCase()));
+    return {
+      id: item.id, kind: "placement", title: item.title,
+      detail: `${item.companyName || "Campus partner"} · closes ${item.date}`,
+      reason: matchingSkills.length ? `Your skills match: ${matchingSkills.join(", ")}` : "You meet the current CGPA eligibility criteria",
+      target: "career", score: matchingSkills.length
+    };
+  }).sort((left, right) => right.score - left.score).slice(0, 4);
+  return res.json({ courses: courseRecommendations, placements: placementRecommendations });
+}));
 app.get("/api/placement/profile", allowedRoles("student"), asyncRoute(async (req, res) => res.json(await placementProfileFor(req.user.id))));
 app.patch("/api/placement/profile", allowedRoles("student"), asyncRoute(async (req, res) => {
   const { skills, cgpa, graduationYear, courseId = "" } = req.body || {};
@@ -2585,16 +2728,38 @@ app.get("/api/attendance", (req, res) => {
 });
 
 app.post("/api/attendance/check-in", allowedRoles("student"), asyncRoute(async (req, res) => {
-  const course = data.courses.find((item) => item.id === req.body?.courseId && item.enrolled.includes(req.user.id));
-  if (!course) return res.status(400).json({ error: "Choose one of your enrolled courses." });
-  const date = new Date().toISOString().slice(0, 10);
-  if (data.attendance.some((item) => item.studentId === req.user.id && item.courseId === course.id && item.date === date)) {
-    return res.status(409).json({ error: "You're already checked in for this course today." });
+  if (typeof req.body?.code === "string" && req.body.code) {
+    const tokenHash = crypto.createHash("sha256").update(req.body.code).digest("hex");
+    const token = await database.getPlatformItem("checkin_tokens", { tokenHash, kind: "attendance" });
+    if (!token || token.expiresAt <= new Date()) return res.status(401).json({ error: "This attendance QR code is invalid or has expired." });
+    const qrCourse = data.courses.find((item) => item.id === token.courseId && item.enrolled.includes(req.user.id));
+    if (!qrCourse) return res.status(403).json({ error: "You are not enrolled in the course for this attendance session." });
+    const checkInDate = new Date().toISOString().slice(0, 10);
+    if (data.attendance.some((item) => item.studentId === req.user.id && item.courseId === qrCourse.id && item.date === checkInDate)) {
+      return res.status(409).json({ error: "You're already checked in for this course today." });
+    }
+    const qrRecord = { id: crypto.randomUUID(), studentId: req.user.id, courseId: qrCourse.id, date: checkInDate, status: "present" };
+    data.attendance.push(qrRecord);
+    await persist();
+    return res.status(201).json({ ...qrRecord, course: qrCourse.title, student: req.user.name });
   }
-  const record = { id: crypto.randomUUID(), studentId: req.user.id, courseId: course.id, date, status: "present" };
-  data.attendance.push(record);
-  await persist();
-  res.status(201).json({ ...record, course: course.title, student: req.user.name });
+  return res.status(400).json({ error: "Scan a valid staff-issued attendance QR code to check in." });
+}));
+app.post("/api/attendance/check-in-code", allowedRoles("trainer", "administrator"), asyncRoute(async (req, res) => {
+  const course = courseFor(req.body?.courseId);
+  if (!course || (req.user.role === "trainer" && !trainerOwnsCourse(course, req.user))) {
+    return res.status(403).json({ error: "Choose one of your assigned courses to create an attendance QR code." });
+  }
+  const code = crypto.randomBytes(32).toString("base64url");
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+  await database.createPlatformItem("checkin_tokens", {
+    id: crypto.randomUUID(), tokenHash: crypto.createHash("sha256").update(code).digest("hex"),
+    kind: "attendance", courseId: course.id, expiresAt, createdBy: req.user.id
+  });
+  return res.status(201).json({
+    code, course: course.title, expiresAt: expiresAt.toISOString(),
+    qrDataUrl: await QRCode.toDataURL(code, { errorCorrectionLevel: "M", margin: 2, width: 240 })
+  });
 }));
 
 app.get("/api/announcements", (req, res) => res.json(data.announcements
@@ -2705,6 +2870,89 @@ app.patch("/api/profile", asyncRoute(async (req, res) => {
   await persist();
   Object.assign(req.user, profile);
   return res.json({ user: req.user });
+}));
+
+app.get("/api/portfolio", allowedRoles("student"), asyncRoute(async (req, res) => {
+  const portfolio = await database.getPlatformItem("student_portfolios", { userId: req.user.id });
+  return res.json(portfolio ? {
+    headline: portfolio.headline, about: portfolio.about, projects: portfolio.projects || [],
+    sharingEnabled: Boolean(portfolio.shareTokenHash)
+  } : { headline: "", about: "", projects: [], sharingEnabled: false });
+}));
+app.put("/api/portfolio", allowedRoles("student"), asyncRoute(async (req, res) => {
+  const { headline = "", about = "", projects = [] } = req.body || {};
+  const validProject = (project) => project && safeText(project.title, 100)
+    && typeof project.description === "string" && project.description.trim().length <= 500
+    && (!project.url || (() => {
+      try { return ["http:", "https:"].includes(new URL(project.url).protocol); }
+      catch { return false; }
+    })())
+    && Array.isArray(project.skills) && project.skills.length <= 12
+    && project.skills.every((skill) => safeText(skill, 40));
+  if (typeof headline !== "string" || headline.trim().length > 120 || typeof about !== "string"
+    || about.trim().length > 600 || !Array.isArray(projects) || projects.length > 20
+    || projects.some((project) => !validProject(project))) {
+    return res.status(400).json({ error: "Add a headline, short bio, and up to 20 valid projects with safe web links." });
+  }
+  const portfolio = {
+    userId: req.user.id, headline: headline.trim(), about: about.trim(),
+    projects: projects.map((project) => ({
+      id: typeof project.id === "string" && project.id.length <= 80 ? project.id : crypto.randomUUID(),
+      title: project.title.trim(), description: project.description.trim(),
+      url: project.url?.trim() || "", skills: project.skills.map((skill) => skill.trim())
+    }))
+  };
+  await (await database.getPlatformCollection("student_portfolios")).updateOne(
+    { userId: req.user.id }, { $set: { ...portfolio, updatedAt: new Date() } }, { upsert: true }
+  );
+  return res.json({ ...portfolio, sharingEnabled: Boolean((await database.getPlatformItem("student_portfolios", { userId: req.user.id }))?.shareTokenHash) });
+}));
+app.post("/api/portfolio/share", allowedRoles("student"), asyncRoute(async (req, res) => {
+  const shareToken = crypto.randomBytes(32).toString("base64url");
+  await (await database.getPlatformCollection("student_portfolios")).updateOne(
+    { userId: req.user.id }, { $set: { shareTokenHash: crypto.createHash("sha256").update(shareToken).digest("hex"), updatedAt: new Date() } }, { upsert: true }
+  );
+  return res.json({ shareToken });
+}));
+app.delete("/api/portfolio/share", allowedRoles("student"), asyncRoute(async (req, res) => {
+  await (await database.getPlatformCollection("student_portfolios")).updateOne(
+    { userId: req.user.id }, { $unset: { shareTokenHash: "" }, $set: { updatedAt: new Date() } }
+  );
+  return res.json({ sharingEnabled: false });
+}));
+app.get("/api/public/portfolio/:shareToken", asyncRoute(async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  const tokenHash = crypto.createHash("sha256").update(req.params.shareToken).digest("hex");
+  const portfolio = await database.getPlatformItem("student_portfolios", { shareTokenHash: tokenHash });
+  if (!portfolio) return res.status(404).json({ error: "This portfolio link is invalid or has been revoked." });
+  const user = data.users.find((candidate) => candidate.id === portfolio.userId && candidate.role === "student" && candidate.active !== false);
+  if (!user) return res.status(404).json({ error: "This portfolio is no longer available." });
+  const [gamification, placementProfile, lessons, progress, modules, attempts] = await Promise.all([
+    database.getPlatformItem("gamification", { userId: user.id }), placementProfileFor(user.id),
+    database.getPlatformItems("lessons"), database.getPlatformItems("lesson_progress", { userId: user.id, completed: true }),
+    database.getPlatformItems("course_modules"), database.getPlatformItems("module_attempts", { userId: user.id, passed: true })
+  ]);
+  const completedLessons = new Set(progress.map((item) => item.lessonId));
+  const passedModules = new Set(attempts.map((item) => item.moduleId));
+  const certificates = data.courses.filter((course) => course.enrolled.includes(user.id)).flatMap((course) => {
+    const courseLessons = lessons.filter((lesson) => lesson.courseId === course.id);
+    const courseModules = modules.filter((module) => module.courseId === course.id);
+    if (!courseLessons.length || !courseModules.length
+      || !courseLessons.every((lesson) => completedLessons.has(lesson.id))
+      || !courseModules.every((module) => passedModules.has(module.id))) return [];
+    const completionDates = [
+      ...progress.filter((item) => item.courseId === course.id).map((item) => new Date(item.completedAt)),
+      ...attempts.filter((attempt) => attempt.courseId === course.id).map((attempt) => new Date(attempt.createdAt))
+    ];
+    const completedAt = completionDates.reduce((latest, value) => value > latest ? value : latest, new Date(0));
+    const certificateId = crypto.createHash("sha256").update(`${user.id}:${course.id}:${completedAt.toISOString()}`).digest("hex").slice(0, 16).toUpperCase();
+    return [{ course: course.title, certificateId, issuedAt: completedAt.toISOString() }];
+  });
+  return res.json({
+    name: user.name, headline: portfolio.headline || user.title || "Campus Hub student",
+    about: portfolio.about || "", skills: [...new Set([...(user.skills || "").split(","), ...(placementProfile.skills || [])].map((skill) => skill.trim()).filter(Boolean))],
+    projects: portfolio.projects || [], achievements: gamification?.badges || [], certificates
+  });
 }));
 
 app.get("/api/admin/overview", allowedRoles("administrator"), asyncRoute(async (_req, res) => {
@@ -2823,7 +3071,7 @@ app.patch("/api/admin/users/:userId/status", allowedRoles("administrator"), asyn
   user.active = req.body.active;
   if (!await database.updateUserProfile(user.id, { active: user.active })) return res.status(404).json({ error: "That campus account could not be found." });
   if (!user.active) {
-    for (const [token, session] of sessions) if (session.userId === user.id) sessions.delete(token);
+    await revokeUserSessions(user.id);
   }
   await persist();
   await auditAdminAction(req.user, user.active ? "activated_account" : "deactivated_account", "user", user.id, `${user.email} access ${user.active ? "enabled" : "disabled"}`);
@@ -2839,7 +3087,7 @@ app.post("/api/admin/users/:userId/reset-password", allowedRoles("administrator"
     return res.status(404).json({ error: "That campus account could not be found." });
   }
   Object.assign(user, credentials, { mustChangePassword: user.role !== "student" });
-  for (const [token, session] of sessions) if (session.userId === user.id) sessions.delete(token);
+  await revokeUserSessions(user.id);
   await persist();
   await auditAdminAction(req.user, "reset_password", "user", user.id, `Password reset for ${user.email}`);
   return res.json({ reset: true, mustChangePassword: user.mustChangePassword });
@@ -2858,7 +3106,7 @@ app.patch("/api/admin/users/:userId/role", allowedRoles("administrator"), asyncR
   user.role = req.body.role;
   user.title = roleNamesForApi[req.body.role];
   user.mustChangePassword = mustChangePassword;
-  for (const [token, session] of sessions) if (session.userId === user.id) sessions.delete(token);
+  await revokeUserSessions(user.id);
   await persist();
   await auditAdminAction(req.user, "changed_role", "user", user.id, `${user.email} role changed to ${user.role}`);
   return res.json({ id: user.id, name: user.name, email: user.email, role: user.role, title: user.title });

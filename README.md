@@ -16,6 +16,11 @@ A local, responsive Campus Hub MVP built with React, Node.js/Express, and MongoD
 - Every seeded software course has a course introduction and a full-width four-module, eight-week roadmap. Each topic includes an explanation and a related YouTube video search; learners mark every topic complete before the module assignment unlocks. Each assignment mixes four concept MCQs with a code-reading MCQ about output, bugs or algorithm behavior. A learner must score at least 70% to pass and unlock the next module; failed assessments can be retried. The certificates page tracks lesson and assignment completion for each enrolled course, then shows and downloads a personalized landscape PDF with the learner name, completed course, award date, unique certificate ID and completion seal.
 - Campus events support coordinator/admin publishing, student registration, and capacity limits. Coordinators/admins can create course batches, assign trainers, and allocate learners with enrollment and capacity checks.
 - A campus assistant with built-in study guidance; an optional OpenAI-compatible provider can be configured using server-side environment variables.
+- Student dashboard recommendations based on recorded course progress, profile skills, course enrollment, placement-profile eligibility, and active placement opportunities. Dashboard next steps, upcoming class times, and weekly activity are derived from saved records rather than fixed sample percentages.
+- Student-owned project portfolios with skills, links, achievements, and completed course certificates. Public links are random, revocable, and stored as hashes; public pages omit contact details and private resume/profile files.
+- Short-lived QR check-in for trainer/admin attendance sessions and registered campus-event attendees. QR credentials are random, expire quickly, and are stored only as hashes; camera scanning requires a supported browser and HTTPS, with manual code entry available as a fallback.
+- Installable PWA manifest and app icon with an offline shell. Only static UI assets are cached; authenticated API responses and student data are never placed in the service-worker cache.
+- Action-oriented in-app reminders for upcoming assignments, registered events, scheduled classes, and placement interviews. Push/email delivery is not enabled without a configured provider.
 - Responsive navigation and layouts, keyboard-visible focus, labelled forms, and helpful loading/error states.
 - The public sign-in page introduces the Campus Hub's vision and mission, learning and campus activities, placement preparation, and student benefits in separate responsive sections.
 - Profile photos (PNG/JPG/WebP, up to 1.5 MB) and PDF resumes (up to 2 MB) are validated and stored with the student's MongoDB account; only that signed-in student can view, download, replace, or remove them. The profile dashboard summarizes completion, learning points, badges, and earned certificates.
@@ -103,18 +108,38 @@ For the browser demonstration, follow the checklist above:
 5. Sign in as `admin@zyngram.com`; create a module, edit its details, and delete it. Confirm it appears for the trainee and remains saved after restarting the app.
 6. Use student and trainer accounts to test task and assignment submission/review, study-group creation, and the campus assistant. Use a trainer account to record learner attendance; use a student account to check in and update placement preparation progress.
 7. Open a course roadmap and read its introduction. For each unlocked module, open every topic, read its explanation, follow the related-video link, and mark it complete. Verify the module assignment stays locked until every topic is complete; then submit it and confirm a score below 70% leaves the next module locked while a passing score unlocks it. Complete every module assignment and available lesson to download the course certificate PDF; check the Zyngram stamp and certificate ID. Sign in as a coordinator/admin to publish an event, create a batch, assign a trainer, and allocate students; confirm event registrations and batch capacity are enforced.
-8. Restart the application and confirm the saved module, account, profile name, and sample workflow records remain available. Check `/api/health` again.
+8. As a student, add portfolio projects and skills in **My profile**, save, create a share link, and confirm the public page excludes email, phone, and resume. Revoke the link and verify the public page is no longer available. Complete learning and update placement skills to see recommendations change.
+9. Have a trainer/admin create a short-lived attendance QR and use a student account to scan it or paste the code; confirm an unenrolled student is denied, duplicate attendance is prevented, and expired codes fail. On an event day, publish an event for today, register, issue an event QR as a coordinator/admin, and check in as the registered attendee.
+10. Install the PWA from a supported browser and verify the dashboard shell opens offline after it has loaded once. Confirm account pages and API data are not presented as cached offline data.
+11. Restart the application and confirm the saved module, account, profile name, and sample workflow records remain available. Check `/api/health` again.
 
-The automated suites cover validation, authentication and role access, profile and database persistence, all-course learning content, stamped PDF eligibility, local and configured AI-provider responses, assignment review, attendance marking, event registration limits, and batch allocation capacity.
+The automated suites cover validation, authentication and role access, profile and database persistence, all-course learning content, stamped PDF eligibility, local and configured AI-provider responses, assignment review, attendance marking and QR check-in, portfolio privacy and revocation, recommendations, event registration limits and QR check-in, and batch allocation capacity.
 
 ## Database and local data
 
 MongoDB collections created by the app:
 
 - `users`, `modules`, and `campus_state`: accounts and role/profile data, learning modules, and the existing course/task/attendance/announcement workflow state.
-- Platform collections for course modules, topic completion and assignment attempts, lessons, resources, quizzes, timetable, assignments/submissions, events and registrations, course batches and allocations, discussion groups/posts, learning progress, gamification, placement companies/jobs/drives/profiles/applications/interviews/offers, administrator audit logs, system settings, and API management (`api_registry`, `api_consumers`, `api_keys`, `api_usage_logs`).
+- Platform collections for course modules, topic completion and assignment attempts, lessons, resources, quizzes, timetable, assignments/submissions, events and registrations, course batches and allocations, discussion groups/posts, learning progress, gamification, student portfolios and hashed check-in tokens, placement companies/jobs/drives/profiles/applications/interviews/offers, administrator audit logs, system settings, and API management (`api_registry`, `api_consumers`, `api_keys`, `api_usage_logs`).
 
 The legacy JSON file is used as the initial seed/import source when `campus_state` is first created; subsequent workflow changes persist in MongoDB. MongoDB user records and platform collections are persisted independently. The server enforces role checks for protected actions.
+
+## Production readiness and account recovery
+
+- Verify the deployed service itself before sharing its URL: open `/api/health` and require `status: ok` plus `database: connected`; then sign in and exercise a protected page. A deployment marked active does not prove that the public route, environment variables, or database connectivity are working. No hosted deployment was independently verified as part of this local code change.
+- Configure a managed MongoDB deployment with network access restricted to the application, TLS, a least-privilege database user, and a private `MONGODB_URI`/`MONGODB_DB` secret. Do not copy production data into a local test database.
+- Schedule and test backups using MongoDB Database Tools. Example PowerShell backup and restore commands (replace placeholders with the actual deployment and database; keep the archive private):
+
+  ```powershell
+  mongodump --uri="$env:MONGODB_URI" --db="$env:MONGODB_DB" --archive="campus-hub-backup.archive.gz" --gzip
+  mongorestore --uri="$env:RESTORE_MONGODB_URI" --archive="campus-hub-backup.archive.gz" --gzip --drop
+  ```
+
+  Restore into a separate staging database first and verify users, courses, portfolios, attendance, and placement records before any production recovery. Retain encrypted backups according to your institution's retention policy.
+- Configure provider-side uptime checks against `/api/health`, alert on non-2xx responses and database errors, and review deployment/runtime logs after releases. The health endpoint verifies the database ping; it is not a full external monitoring/alerting service.
+- Login sessions are stored in MongoDB using hashes of the cookie tokens, expire automatically, and survive API process restarts. Login-attempt counters remain process-local; for multi-instance/high-traffic deployment, use a distributed rate limiter, enforce HTTPS, set a strong per-environment secret strategy, and review request/body size limits and MongoDB access before exposing the service publicly.
+- Password recovery is administrator-assisted: an administrator can reset a staff/student password, and the affected user must set a new password at next sign-in. The app does not configure a mailbox or self-service email reset links. Add and verify an institutional mail provider before promising email recovery or push reminders.
+- Camera-based QR scanning requires HTTPS and browser support for `BarcodeDetector`; pasted code entry is the fallback. The short-lived token is an attendance credential, not proof of physical presence against screenshots or collusion; staff should supervise check-in.
 
 ## Day 24 — API Management
 

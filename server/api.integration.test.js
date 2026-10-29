@@ -333,6 +333,39 @@ test("local API supports validated auth, role restrictions, editable profiles, C
       body: {}
     });
     assert.equal(javaEnrollment.status, 200);
+    const recommendations = await request(server.baseUrl, "/api/recommendations", { cookie: courseLogin.cookie });
+    assert.equal(recommendations.status, 200);
+    assert.ok(Array.isArray(recommendations.result.courses));
+    assert.ok(Array.isArray(recommendations.result.placements));
+    const directAttendanceCheckIn = await request(server.baseUrl, "/api/attendance/check-in", {
+      method: "POST", cookie: courseLogin.cookie, body: { courseId: "c-8" }
+    });
+    assert.equal(directAttendanceCheckIn.status, 400);
+    const savedPortfolio = await request(server.baseUrl, "/api/portfolio", {
+      method: "PUT", cookie: courseLogin.cookie,
+      body: {
+        headline: "Full-stack developer in training", about: "I enjoy building accessible campus tools.",
+        projects: [{ id: "integration-project", title: "Campus planner", description: "A schedule helper.", url: "https://example.test/project", skills: ["React", "Accessibility"] }]
+      }
+    });
+    assert.equal(savedPortfolio.status, 200, `${JSON.stringify(savedPortfolio.result)}\n${server.getOutput()}`);
+    const sharePortfolio = await request(server.baseUrl, "/api/portfolio/share", {
+      method: "POST", cookie: courseLogin.cookie, body: {}
+    });
+    assert.equal(sharePortfolio.status, 200);
+    const sharedPortfolio = await request(server.baseUrl, `/api/public/portfolio/${sharePortfolio.result.shareToken}`);
+    assert.equal(sharedPortfolio.status, 200);
+    assert.equal(sharedPortfolio.result.name, "Aarav Mehta");
+    assert.equal(sharedPortfolio.result.projects[0].title, "Campus planner");
+    assert.equal("email" in sharedPortfolio.result, false);
+    assert.equal("resumeData" in sharedPortfolio.result, false);
+    const storedPortfolio = await client.db(temporaryDatabase).collection("student_portfolios").findOne({ userId: courseLogin.result.user.id });
+    assert.equal(storedPortfolio.shareTokenHash, createHash("sha256").update(sharePortfolio.result.shareToken).digest("hex"));
+    assert.equal(storedPortfolio.shareTokenHash.includes(sharePortfolio.result.shareToken), false);
+    assert.equal((await request(server.baseUrl, "/api/portfolio/share", {
+      method: "DELETE", cookie: courseLogin.cookie, body: {}
+    })).status, 200);
+    assert.equal((await request(server.baseUrl, `/api/public/portfolio/${sharePortfolio.result.shareToken}`)).status, 404);
     const startingCertificates = await request(server.baseUrl, "/api/certificates", { cookie: courseLogin.cookie });
     assert.ok(startingCertificates.result.some((certificate) => certificate.courseId === "c-8"
       && !certificate.eligible
@@ -702,6 +735,35 @@ test("local API supports validated auth, role restrictions, editable profiles, C
       body: {}
     });
     assert.equal(studentCourseEnrollment.status, 200, JSON.stringify({ result: studentCourseEnrollment.result, course: trainerCourseCreate.result }));
+    const attendanceQr = await request(server.baseUrl, "/api/attendance/check-in-code", {
+      method: "POST", cookie: trainerLogin.cookie, body: { courseId: trainerCourseCreate.result.id }
+    });
+    assert.equal(attendanceQr.status, 201);
+    assert.match(attendanceQr.result.qrDataUrl, /^data:image\/png;base64,/);
+    const storedAttendanceQr = await client.db(temporaryDatabase).collection("checkin_tokens").findOne({
+      tokenHash: createHash("sha256").update(attendanceQr.result.code).digest("hex")
+    });
+    assert.equal(storedAttendanceQr.kind, "attendance");
+    assert.equal("code" in storedAttendanceQr, false);
+    const unenrolledQrCheckIn = await request(server.baseUrl, "/api/attendance/check-in", {
+      method: "POST", cookie: registrationCookie, body: { code: attendanceQr.result.code }
+    });
+    assert.equal(unenrolledQrCheckIn.status, 403);
+    const qrCheckIn = await request(server.baseUrl, "/api/attendance/check-in", {
+      method: "POST", cookie: courseLogin.cookie, body: { code: attendanceQr.result.code }
+    });
+    assert.equal(qrCheckIn.status, 201);
+    const duplicateQrCheckIn = await request(server.baseUrl, "/api/attendance/check-in", {
+      method: "POST", cookie: courseLogin.cookie, body: { code: attendanceQr.result.code }
+    });
+    assert.equal(duplicateQrCheckIn.status, 409);
+    await client.db(temporaryDatabase).collection("checkin_tokens").updateOne(
+      { _id: storedAttendanceQr._id }, { $set: { expiresAt: new Date(Date.now() - 1000) } }
+    );
+    const expiredAttendanceQr = await request(server.baseUrl, "/api/attendance/check-in", {
+      method: "POST", cookie: courseLogin.cookie, body: { code: attendanceQr.result.code }
+    });
+    assert.equal(expiredAttendanceQr.status, 401);
     const enrolledCourseMaterial = await requestBinary(server.baseUrl, `/api/resources/${courseMaterial.result.id}/download`, courseLogin.cookie);
     assert.equal(enrolledCourseMaterial.status, 200, enrolledCourseMaterial.bytes.toString());
     assert.match(enrolledCourseMaterial.contentType, /^text\/plain/);
@@ -868,6 +930,30 @@ test("local API supports validated auth, role restrictions, editable profiles, C
       method: "DELETE", cookie: adminLogin.cookie
     });
     assert.equal(eventCancellation.status, 200);
+    const eventToday = await request(server.baseUrl, "/api/events", {
+      method: "POST", cookie: adminLogin.cookie,
+      body: { title: "QR check-in test", description: "Event QR coverage.", date: new Date().toISOString().slice(0, 10), startTime: "10:30", location: "Test Lab", category: "Workshop", capacity: 2 }
+    });
+    assert.equal(eventToday.status, 201);
+    assert.equal((await request(server.baseUrl, `/api/events/${eventToday.result.id}/register`, {
+      method: "POST", cookie: courseLogin.cookie, body: {}
+    })).status, 200);
+    const eventQr = await request(server.baseUrl, `/api/events/${eventToday.result.id}/check-in-code`, {
+      method: "POST", cookie: adminLogin.cookie, body: {}
+    });
+    assert.equal(eventQr.status, 201);
+    const unregisteredEventCheckIn = await request(server.baseUrl, `/api/events/${eventToday.result.id}/check-in`, {
+      method: "POST", cookie: registrationCookie, body: { code: eventQr.result.code }
+    });
+    assert.equal(unregisteredEventCheckIn.status, 403);
+    const eventCheckIn = await request(server.baseUrl, `/api/events/${eventToday.result.id}/check-in`, {
+      method: "POST", cookie: courseLogin.cookie, body: { code: eventQr.result.code }
+    });
+    assert.equal(eventCheckIn.status, 200);
+    assert.equal(eventCheckIn.result.checkedIn, true);
+    assert.equal((await request(server.baseUrl, `/api/events/${eventToday.result.id}/check-in`, {
+      method: "POST", cookie: courseLogin.cookie, body: { code: eventQr.result.code }
+    })).status, 409);
 
     const batchCreate = await request(server.baseUrl, "/api/batches", {
       method: "POST",
@@ -1284,6 +1370,9 @@ test("local API supports validated auth, role restrictions, editable profiles, C
     );
     await stopServer(server.child);
     server = await startServer(port);
+    const sessionAfterRestart = await request(server.baseUrl, "/api/auth/me", { cookie: registrationCookie });
+    assert.equal(sessionAfterRestart.status, 200);
+    assert.equal(sessionAfterRestart.result.user.email, registration.result.email);
 
     const previousIdLogin = await request(server.baseUrl, "/api/auth/login", {
       method: "POST",
@@ -1297,7 +1386,6 @@ test("local API supports validated auth, role restrictions, editable profiles, C
       body: { email: registration.result.email, password: "TestPass123", role: "student" }
     });
     assert.equal(relogin.status, 200);
-
     const persistedProfile = await request(server.baseUrl, "/api/auth/me", { cookie: relogin.cookie });
     assert.equal(persistedProfile.result.user.name, "Integration Trainee Updated");
     assert.equal(persistedProfile.result.user.phone, "555-0100");
@@ -1306,12 +1394,15 @@ test("local API supports validated auth, role restrictions, editable profiles, C
 
     const persistedModules = await request(server.baseUrl, "/api/modules", { cookie: relogin.cookie });
     assert.ok(persistedModules.result.some((module) => module.id === moduleId && module.title === "Integration module updated"));
-
     const deleteDenied = await request(server.baseUrl, `/api/modules/${moduleId}`, {
       method: "DELETE",
       cookie: relogin.cookie
     });
     assert.equal(deleteDenied.status, 403);
+    assert.equal((await request(server.baseUrl, "/api/auth/logout", {
+      method: "POST", cookie: relogin.cookie, body: {}
+    })).status, 200);
+    assert.equal((await request(server.baseUrl, "/api/auth/me", { cookie: relogin.cookie })).status, 401);
 
     const adminRelogin = await request(server.baseUrl, "/api/auth/login", {
       method: "POST",

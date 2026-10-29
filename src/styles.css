@@ -1280,3 +1280,57 @@ input::placeholder, textarea::placeholder { color: #b1b1be; }
   .coordinator-request-actions select { width: 100%; }
   .coordinator-assignment-control { min-width: 150px; }
 }
+.student-insights { min-width: 0; }
+.recommendation-row { display: flex; align-items: center; gap: 10px; padding: 11px 0; border-top: 1px solid #efeff5; }
+.recommendation-icon { width: 32px; height: 32px; flex: none; display: grid; place-items: center; border-radius: 9px; color: #3e786d; background: #e8f2eb; }
+.recommendation-row > span:nth-child(2) { min-width: 0; flex: 1; }
+.recommendation-row strong, .recommendation-row small { display: block; }
+.recommendation-row strong { color: #555570; font-size: 11px; }
+.recommendation-row small { margin-top: 4px; color: #9696a8; font-size: 10px; line-height: 1.5; }
+.student-portfolio { grid-column: 1 / -1; }
+.student-portfolio > form > label { display: block; margin: 12px 0; color: #66667e; font-size: 11px; font-weight: 700; }
+.student-portfolio input, .student-portfolio textarea { width: 100%; display: block; margin-top: 6px; padding: 10px; border: 1px solid #e8e7ef; border-radius: 8px; color: #4d4d68; background: #fcfcfe; font: 400 12px var(--font-ui); }
+.student-portfolio textarea { line-height: 1.6; resize: vertical; }
+.portfolio-project-form { margin: 12px 0; padding: 12px; border: 1px solid #eeedf3; border-radius: 10px; background: #fcfcfe; }
+.portfolio-project-form > label { display: block; margin: 10px 0; color: #66667e; font-size: 10px; font-weight: 700; }
+.portfolio-project-heading, .portfolio-actions, .portfolio-share-link { display: flex; align-items: center; justify-content: space-between; gap: 9px; }
+.portfolio-project-heading > strong, .portfolio-project-heading > span { color: #555570; font-size: 11px; }
+.portfolio-actions { justify-content: flex-start; flex-wrap: wrap; margin-top: 12px; }
+.portfolio-share-link { justify-content: flex-start; flex-wrap: wrap; margin-top: 12px; padding: 10px; border-radius: 8px; background: #f3f7f4; }
+.portfolio-share-link a { min-width: 0; flex: 1; overflow-wrap: anywhere; color: #3e786d; font-size: 11px; }
+.qr-scanner { min-width: 230px; padding: 12px; border: 1px solid #e8e7ef; border-radius: 10px; background: #fcfcfe; }
+.qr-scanner-heading { display: flex; align-items: center; gap: 7px; color: #555570; font-size: 11px; }
+.qr-scanner-heading svg { color: #3e786d; }
+.qr-scanner > label { display: block; margin: 10px 0; color: #77778c; font-size: 10px; }
+.qr-scanner input { width: 100%; margin-top: 5px; padding: 8px; border: 1px solid #e8e7ef; border-radius: 7px; font: 400 11px var(--font-ui); }
+.qr-scanner-actions { display: flex; gap: 7px; }
+.qr-camera { display: none; width: 100%; max-height: 240px; margin-top: 10px; border-radius: 8px; background: #24243a; object-fit: cover; }
+.qr-camera-active { display: block; }
+.qr-display { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px; border: 1px solid #eeedf3; border-radius: 9px; background: #fff; }
+.qr-display img { width: 120px; height: 120px; object-fit: contain; }
+.qr-display strong, .qr-display small { display: block; color: #555570; font-size: 11px; }
+.qr-display small { margin-top: 5px; color: #9696a8; font-size: 10px; }
+.attendance-mark-form .panel-heading { flex-wrap: wrap; }
+.event-card .qr-scanner, .event-card .qr-display { flex-basis: 100%; }
+.event-checkin-status { color: #3e786d; font-size: 10px; font-weight: 700; }
+.public-portfolio-page { width: min(900px, calc(100% - 32px)); display: grid; gap: 14px; margin: 36px auto; color: #4d4d68; }
+.public-portfolio-intro { padding: 28px; }
+.public-portfolio-intro h1 { margin: 8px 0; color: #454561; font: 700 28px/1.2 var(--font-ui); }
+.public-portfolio-intro h2 { margin: 0; color: #3e786d; font: 600 16px/1.5 var(--font-ui); }
+.public-portfolio-intro p, .public-project p { color: #77778c; font-size: 12px; line-height: 1.7; }
+.portfolio-skills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.portfolio-skills span { padding: 6px 9px; border-radius: 999px; color: #3e786d; background: #eaf3ed; font-size: 10px; }
+.public-project-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+.public-project { padding: 14px; }
+.public-project h3 { margin: 0; color: #555570; font-size: 13px; }
+.public-project a { display: inline-flex; align-items: center; gap: 5px; margin-top: 10px; color: #3e786d; font-size: 11px; }
+.portfolio-certificate { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 9px; color: #3e786d; background: #e8f2eb; }
+.public-portfolio-page > footer { padding: 12px; color: #9696a8; text-align: center; font-size: 10px; }
+@media (max-width: 650px) {
+  .portfolio-actions { align-items: stretch; flex-direction: column; }
+  .portfolio-actions .button { justify-content: center; }
+  .public-portfolio-page { margin: 18px auto; }
+  .public-portfolio-intro { padding: 18px; }
+  .qr-scanner { min-width: 0; width: 100%; }
+  .install-app-button { padding: 7px; font-size: 9px; }
+}

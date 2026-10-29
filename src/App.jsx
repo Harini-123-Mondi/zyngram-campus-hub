@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import {
   Activity, ArrowRight, ArrowUpRight, Award, BarChart3, Bell, BookOpen, Bot, BriefcaseBusiness, Building2, CalendarDays, Camera, Check, ChevronDown,
   ChevronLeft, ChevronRight, CircleAlert, CircleCheck, CircleHelp, CircleUserRound, Clock3, FileCheck2, GraduationCap, LayoutDashboard,
-  FileText, LogOut, Medal, Menu, MessageCircle, MoreHorizontal, Plus, Route, Search, Send, ShieldCheck, Sparkles, Target, Trash2, Upload,
-  Users, X
+  FileText, LogOut, Medal, Menu, MessageCircle, MoreHorizontal, Plus, Route, Search, Send, ShieldCheck, Sparkles, Target, Trash2, Upload, Download,
+  Users, X, QrCode
 } from "lucide-react";
 import { api } from "./api.js";
 import {
@@ -12,6 +12,8 @@ import {
   CommunityPage, GamificationPage, LearningHub, LearningPathPage, NotificationsPage, TrainerCoursesPage, TrainerReportsPage,
   ReportsPage, TimetablePage
 } from "./Platform.jsx";
+import QrScanner from "./QrScanner.jsx";
+import { StudentPortfolio, StudentRecommendations } from "./StudentFeatures.jsx";
 
 const roleNames = { student: "Student", trainer: "Trainer", coordinator: "Coordinator", placement_officer: "Placement Officer", administrator: "Administrator" };
 const navItems = [
@@ -312,8 +314,27 @@ function Sidebar({ page, setPage, user, onLogout, mobileOpen, closeMobile }) {
 }
 
 function Header({ title, user, onMenu, onProfile, onNotifications }) {
+  const [installPrompt, setInstallPrompt] = useState(null);
+  useEffect(() => {
+    const capturePrompt = (event) => {
+      event.preventDefault();
+      setInstallPrompt(event);
+    };
+    const installed = () => setInstallPrompt(null);
+    window.addEventListener("beforeinstallprompt", capturePrompt);
+    window.addEventListener("appinstalled", installed);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", capturePrompt);
+      window.removeEventListener("appinstalled", installed);
+    };
+  }, []);
+  async function installApp() {
+    if (!installPrompt) return;
+    await installPrompt.prompt();
+    setInstallPrompt(null);
+  }
   const formatted = new Intl.DateTimeFormat("en", { weekday: "long", month: "long", day: "numeric" }).format(new Date());
-  return <header className="topbar"><button className="mobile-menu icon-button" aria-label="Open navigation" onClick={onMenu}><Menu size={21} /></button><div className="breadcrumb"><span>Campus Hub</span><span className="breadcrumb-slash">/</span><strong>{title}</strong></div><div className="topbar-actions"><span className="today-label">{formatted}</span><button className="icon-button notification-button" title="Notifications" onClick={onNotifications}><Bell size={18} /><i /></button><span className="topbar-divider" /><button className="profile-button" onClick={onProfile}><Avatar user={user} small /><span><strong>{user.name}</strong><small>{roleNames[user.role]}</small></span><ChevronDown size={14} /></button></div></header>;
+  return <header className="topbar"><button className="mobile-menu icon-button" aria-label="Open navigation" onClick={onMenu}><Menu size={21} /></button><div className="breadcrumb"><span>Campus Hub</span><span className="breadcrumb-slash">/</span><strong>{title}</strong></div><div className="topbar-actions"><span className="today-label">{formatted}</span>{installPrompt && <button className="button button-outline button-small install-app-button" onClick={installApp}><Download size={14} /> Install app</button>}<button className="icon-button notification-button" title="Notifications" onClick={onNotifications}><Bell size={18} /><i /></button><span className="topbar-divider" /><button className="profile-button" onClick={onProfile}><Avatar user={user} small /><span><strong>{user.name}</strong><small>{roleNames[user.role]}</small></span><ChevronDown size={14} /></button></div></header>;
 }
 
 function PageHeading({ eyebrow, title, subtitle, action }) {
@@ -325,24 +346,26 @@ function Notice({ error, success }) { return <>{error && <p className="form-erro
 
 function Dashboard({ data, user, setPage }) {
   const learner = user.role === "student";
-  const due = data.tasks.find((task) => task.status !== "submitted");
-  const week = [30, 54, 42, 76, 64, 92, 55];
+  const due = data.nextDeadline || data.tasks.find((task) => task.status !== "submitted");
+  const weeklyActivity = data.weeklyActivity || [];
+  const maxActivity = Math.max(1, ...weeklyActivity.map((item) => item.count));
   return <div className="page-content">
     <PageHeading eyebrow="WELCOME TO YOUR CAMPUS HUB" title={<>Welcome, {user.name.split(" ")[0]}<span className="heading-dot">!</span></>} subtitle="“Every small step brings you closer to something great.”" action={<button className="button button-outline" onClick={() => setPage("courses")}><CalendarDays size={16} /> This week <ChevronDown size={14} /></button>} />
     <section className="welcome-banner"><div className="banner-copy"><span className="eyebrow light-eyebrow">A NOTE FOR YOUR WEEK <span className="banner-spark">✳</span></span><h2>{learner ? <>You're closer than<br />you think.</> : <>Small steps make<br />big momentum.</>}</h2><p>{learner ? "One task, one question, one brave idea. You've got this." : "A little encouragement goes a long way. Your learners are making moves."}</p><button className="button button-light" onClick={() => setPage("tasks")}>{learner ? "See my next step" : "See learner progress"}<ArrowRight size={16} /></button></div><div className="banner-illustration" aria-hidden="true"><span className="banner-orbit orbit-a" /><span className="banner-orbit orbit-b" /><span className="banner-planet">✳</span><span className="banner-star star-a">✦</span><span className="banner-star star-b">✧</span><span className="banner-satellite">◌</span></div><span className="banner-index">A LITTLE AT A TIME · 01</span></section>
     <div className="stats-grid">
-      <article className="stat-card"><div className="stat-top"><span className="stat-icon lilac-icon"><BookOpen size={17} /></span><span className="stat-trend positive"><ArrowUpRight size={13} /> 8%</span></div><strong>{learner ? data.courses.length.toString().padStart(2, "0") : data.counts.learners.toString().padStart(2, "0")}</strong><span>{learner ? "Active courses" : "Active learners"}</span><small>{learner ? "Across your learning plan" : "Across all active batches"}</small></article>
+      <article className="stat-card"><div className="stat-top"><span className="stat-icon lilac-icon"><BookOpen size={17} /></span><span className="stat-trend neutral">{learner ? "ENROLLED" : "CAMPUS"}</span></div><strong>{learner ? data.courses.length.toString().padStart(2, "0") : data.counts.learners.toString().padStart(2, "0")}</strong><span>{learner ? "Active courses" : "Active learners"}</span><small>{learner ? "Across your learning plan" : "Across all active batches"}</small></article>
       <article className="stat-card"><div className="stat-top"><span className="stat-icon orange-icon"><Clock3 size={17} /></span><span className="stat-trend neutral">THIS WEEK</span></div><strong>{(data.pendingAssignments ?? data.tasks.filter((task) => task.status !== "submitted").length).toString().padStart(2, "0")}</strong><span>{learner ? "Pending assignments" : "Sessions to review"}</span><small>{due ? `Next up · ${new Date(`${due.due}T12:00:00`).toLocaleDateString("en", { month: "short", day: "numeric" })}` : "You're all caught up"}</small></article>
-      <article className="stat-card"><div className="stat-top"><span className="stat-icon green-icon"><Activity size={17} /></span><span className="stat-trend positive"><ArrowUpRight size={13} /> 4%</span></div><strong>{data.attendancePercent}<small className="percent">%</small></strong><span>Attendance so far</span><small>Looking good — keep it up</small></article>
+      <article className="stat-card"><div className="stat-top"><span className="stat-icon green-icon"><Activity size={17} /></span><span className="stat-trend neutral">RECORDED</span></div><strong>{data.attendancePercent}<small className="percent">%</small></strong><span>Attendance so far</span><small>Based on recorded sessions</small></article>
       <article className="stat-card"><div className="stat-top"><span className="stat-icon blue-icon"><Sparkles size={17} /></span><span className="stat-trend neutral">{learner ? `${data.learningPoints || 0} POINTS` : "REVIEWS"}</span></div><strong>{learner ? `${data.learningProgress || 0}%` : data.counts.pendingReviews.toString().padStart(2, "0")}</strong><span>{learner ? "Learning progress" : "Reviews to share"}</span><small>{learner ? `${(data.badges || []).length} badges earned` : "A little feedback goes far"}</small></article>
     </div>
     <div className="dashboard-grid">
       <section className="panel"><div className="panel-heading"><div><span className="eyebrow">MADE FOR YOUR NEXT CHAPTER</span><h3>{learner ? "Your learning path" : "Your campus courses"}</h3></div><button className="link-button" onClick={() => setPage("courses")}>All courses <ArrowRight size={15} /></button></div><div className="course-list">{data.courses.slice(0, 3).map((course) => <article className="course-row" key={course.id}><span className={`course-symbol symbol-${course.color}`}>{course.icon}</span><div className="course-row-info"><span className="course-category">{course.category}</span><strong>{course.title}</strong><small>{course.trainer} <i>·</i> {course.schedule}</small></div><div className="course-progress"><div className="progress-label"><span>{course.progress}%</span><small>done</small></div><div className="progress-track"><span style={{ width: `${course.progress}%` }} /></div></div><button className="icon-button row-arrow" onClick={() => setPage("courses")} aria-label={`Open ${course.title}`}><ArrowRight size={16} /></button></article>)}</div></section>
-      <section className="panel progress-panel"><div className="panel-heading"><div><span className="eyebrow">YOUR LITTLE WINS ADD UP</span><h3>Learning rhythm</h3></div><button className="icon-button" aria-label="More progress options"><MoreHorizontal size={19} /></button></div><div className="rhythm-summary"><div><strong>{Math.max(2, Math.round(data.attendancePercent / 20))}<span> days</span></strong><small>active this week</small></div><div className="rhythm-legend"><i /> Weekly activity</div></div><div className="chart-bars" role="img" aria-label="Activity over the last seven days">{week.map((height, index) => <div className="bar-column" key={index}><span className={`chart-bar ${index === 4 ? "chart-bar-current" : ""}`} style={{ height: `${height}%` }} /><small>{["M", "T", "W", "T", "F", "S", "S"][index]}</small></div>)}</div><div className="progress-foot"><span><i /> A steady rhythm beats a sprint.</span><ArrowUpRight size={15} /></div></section>
+      <section className="panel progress-panel"><div className="panel-heading"><div><span className="eyebrow">YOUR LITTLE WINS ADD UP</span><h3>Learning rhythm</h3></div></div><div className="rhythm-summary"><div><strong>{data.weeklyActiveDays || 0}<span> days</span></strong><small>with recorded activity this week</small></div><div className="rhythm-legend"><i /> Lessons + attendance</div></div><div className="chart-bars" role="img" aria-label="Recorded lesson completions and attendance over the last seven days">{weeklyActivity.map((item, index) => <div className="bar-column" key={`${item.day}-${index}`}><span className={`chart-bar ${index === weeklyActivity.length - 1 ? "chart-bar-current" : ""}`} style={{ height: `${item.count ? Math.max(8, item.count / maxActivity * 100) : 4}%` }} /><small>{item.day}</small></div>)}</div><div className="progress-foot"><span><i /> Activity from your recorded learning.</span></div></section>
     </div>
     <div className="dashboard-grid lower-grid"><section className="panel"><div className="panel-heading"><div><span className="eyebrow">ONE THING AT A TIME</span><h3>Coming up next</h3></div><button className="link-button" onClick={() => setPage("tasks")}>See all <ArrowRight size={15} /></button></div>{data.tasks.slice(0, 2).map((task) => <button className="task-teaser" key={task.id} onClick={() => setPage("tasks")}><span className={`task-check ${task.status === "submitted" ? "task-done" : ""}`}>{task.status === "submitted" && <Check size={13} />}</span><span className="task-teaser-copy"><strong>{task.title}</strong><small>{task.course}</small></span><span className="task-due">{task.status === "submitted" ? "Submitted" : `Due ${new Date(`${task.due}T12:00:00`).toLocaleDateString("en", { month: "short", day: "numeric" })}`}</span><ChevronRight size={15} /></button>)}</section>
       <section className="panel"><div className="panel-heading"><div><span className="eyebrow">A NOTE FROM YOUR COMMUNITY</span><h3>Campus bulletin</h3></div><button className="link-button" onClick={() => setPage("announcements")}>All notes <ArrowRight size={15} /></button></div>{data.announcements.slice(0, 2).map((note) => <button className="announcement-teaser" key={note.id} onClick={() => setPage("announcements")}><span className={`announcement-mark mark-${note.color}`}>{note.tag === "CAMPUS" ? "✳" : "✦"}</span><span><strong>{note.title}</strong><small>{new Date(`${note.date}T12:00:00`).toLocaleDateString("en", { month: "short", day: "numeric" })} · {note.author}</small></span></button>)}</section></div>
-    <div className="dashboard-grid dashboard-support-grid"><section className="panel"><div className="panel-heading"><div><span className="eyebrow">YOUR NEXT CLASS</span><h3>Upcoming timetable</h3></div><button className="link-button" onClick={() => setPage("timetable")}>Full week <ArrowRight size={14} /></button></div>{(data.upcomingClasses || []).slice(0, 3).map((item) => <button className="upcoming-class-row" key={item.id} onClick={() => setPage("timetable")}><span className="upcoming-class-day">{item.day.slice(0, 3)}</span><span><strong>{item.title}</strong><small>{item.course} · {item.startTime} · {item.room}</small></span><ChevronRight size={14} /></button>)}{!data.upcomingClasses?.length && <p className="empty-inline">No classes scheduled yet.</p>}</section><section className="panel dashboard-shortcuts"><span className="eyebrow">YOUR CAMPUS, ONE STEP AWAY</span><h3>Keep your momentum</h3><p>{learner ? "Choose a small next step and build a steady learning rhythm." : "A little coordination today makes a smoother learner journey."}</p><div className="dashboard-shortcut-grid">{learner && <button onClick={() => setPage("learningPath")}><GraduationCap size={16} /> Learning path</button>}<button onClick={() => setPage("assistant")}><Sparkles size={16} /> Ask assistant</button><button onClick={() => setPage("career")}><BookOpen size={16} /> Career prep</button><button onClick={() => setPage("analytics")}><Activity size={16} /> Progress report</button></div></section></div>
+    <div className="dashboard-grid dashboard-support-grid"><section className="panel"><div className="panel-heading"><div><span className="eyebrow">YOUR NEXT CLASS</span><h3>Upcoming timetable</h3></div><button className="link-button" onClick={() => setPage("timetable")}>Full week <ArrowRight size={14} /></button></div>{(data.upcomingClasses || []).slice(0, 3).map((item) => <button className="upcoming-class-row" key={item.id} onClick={() => setPage("timetable")}><span className="upcoming-class-day">{new Date(item.date).toLocaleDateString("en", { weekday: "short" })}</span><span><strong>{item.title}</strong><small>{item.course} · {new Date(item.date).toLocaleDateString("en", { month: "short", day: "numeric" })} · {item.startTime} · {item.room}</small></span><ChevronRight size={14} /></button>)}{!data.upcomingClasses?.length && <p className="empty-inline">No classes scheduled yet.</p>}</section><section className="panel dashboard-shortcuts"><span className="eyebrow">YOUR CAMPUS, ONE STEP AWAY</span><h3>{learner && data.nextAction ? data.nextAction.title : "Keep your momentum"}</h3><p>{learner && data.nextAction ? data.nextAction.detail : learner ? "Choose a small next step and build a steady learning rhythm." : "A little coordination today makes a smoother learner journey."}</p><div className="dashboard-shortcut-grid">{learner && <button onClick={() => setPage(data.nextAction?.target || "learningPath")}><GraduationCap size={16} /> Your next action</button>}{learner && <button onClick={() => setPage("learningPath")}><GraduationCap size={16} /> Learning path</button>}<button onClick={() => setPage("assistant")}><Sparkles size={16} /> Ask assistant</button><button onClick={() => setPage("career")}><BookOpen size={16} /> Career prep</button><button onClick={() => setPage("analytics")}><Activity size={16} /> Progress report</button></div></section></div>
+    {learner && <div className="dashboard-grid"><StudentRecommendations setPage={setPage} /></div>}
     <footer className="page-footer"><span>MADE WITH A LITTLE EXTRA CARE <b>✳</b></span><span>ZYNGRAM CAMPUS HUB <i>·</i> 2026</span></footer>
   </div>;
 }
@@ -641,6 +664,7 @@ function Attendance({ records, courses, user, refresh }) {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [busy, setBusy] = useState(false);
+  const [qr, setQr] = useState(null);
   const canMark = ["trainer", "administrator"].includes(user.role);
   useEffect(() => {
     if (!canMark) return;
@@ -649,10 +673,19 @@ function Attendance({ records, courses, user, refresh }) {
       setLearnerId(items[0]?.id || "");
     }).catch((err) => setError(err.message));
   }, [canMark]);
-  async function checkIn(event) {
-    event.preventDefault(); setBusy(true); setError(""); setSuccess("");
-    try { await api("/attendance/check-in", { method: "POST", body: JSON.stringify({ courseId }) }); await refresh(); setSuccess("You're checked in. Hope it's a good session!"); }
-    catch (err) { setError(err.message); } finally { setBusy(false); }
+  async function checkInWithCode(code) {
+    setBusy(true); setError(""); setSuccess("");
+    try {
+      await api("/attendance/check-in", { method: "POST", body: JSON.stringify({ code }) });
+      await refresh(); setSuccess("QR check-in complete. You're marked present for this course.");
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+  async function createCheckInQr() {
+    setBusy(true); setError(""); setSuccess(""); setQr(null);
+    try { setQr(await api("/attendance/check-in-code", { method: "POST", body: JSON.stringify({ courseId }) })); }
+    catch (err) { setError(err.message); }
+    finally { setBusy(false); }
   }
   async function markAttendance(event) {
     event.preventDefault(); setBusy(true); setError(""); setSuccess("");
@@ -662,8 +695,9 @@ function Attendance({ records, courses, user, refresh }) {
     } catch (err) { setError(err.message); } finally { setBusy(false); }
   }
   const percent = records.length ? Math.round(records.filter((item) => item.status !== "absent").length / records.length * 100) : 0;
-  return <div className="page-content"><PageHeading eyebrow="SHOWING UP IS A SUPERPOWER" title={<>Every day you show up, <em>counts.</em></>} subtitle="A clear view of the sessions you've been part of." action={user.role === "student" && <form className="check-in-form" onSubmit={checkIn}><select aria-label="Choose a course for check-in" value={courseId} onChange={(event) => setCourseId(event.target.value)}>{courses.map((course) => <option key={course.id} value={course.id}>{course.title}</option>)}</select><button className="button button-primary" disabled={busy || !courseId}>{busy ? "Checking in…" : "Check in"}<Check size={15} /></button></form>} />{(error || success) && <div className={error ? "inline-alert error-alert" : "inline-alert success-alert"} role="status">{error || success}</div>}
-    {canMark && <form className="panel attendance-mark-form" onSubmit={markAttendance}><div className="panel-heading"><div><span className="eyebrow">{user.role === "trainer" ? "TRAINER TOOL" : "ADMINISTRATOR TOOL"}</span><h3>Record learner attendance</h3></div><Check size={18} /></div><div className="attendance-mark-fields"><label>Learner<select value={learnerId} onChange={(event) => setLearnerId(event.target.value)} required><option value="" disabled>Select a learner</option>{learners.map((learner) => <option key={learner.id} value={learner.id}>{learner.name} · {learner.email}</option>)}</select></label><label>Course<select value={courseId} onChange={(event) => setCourseId(event.target.value)} required><option value="" disabled>Select a course</option>{courses.map((course) => <option key={course.id} value={course.id}>{course.title}</option>)}</select></label><label>Date<input type="date" value={date} onChange={(event) => setDate(event.target.value)} required /></label><label>Status<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="present">Present</option><option value="late">Late</option><option value="absent">Absent</option></select></label><button className="button button-primary" disabled={busy || !learnerId || !courseId}>{busy ? "Saving…" : "Save attendance"}<Check size={15} /></button></div></form>}
+  return <div className="page-content"><PageHeading eyebrow="SHOWING UP IS A SUPERPOWER" title={<>Every day you show up, <em>counts.</em></>} subtitle="Scan a staff-issued course QR or paste its short-lived code to check in." />{(error || success) && <div className={error ? "inline-alert error-alert" : "inline-alert success-alert"} role="status">{error || success}</div>}
+    {user.role === "student" && <QrScanner label="Student QR check-in" onScan={checkInWithCode} />}
+    {canMark && <form className="panel attendance-mark-form" onSubmit={markAttendance}><div className="panel-heading"><div><span className="eyebrow">{user.role === "trainer" ? "TRAINER TOOL" : "ADMINISTRATOR TOOL"}</span><h3>Record learner attendance</h3></div><button className="button button-outline button-small" type="button" disabled={busy || !courseId} onClick={createCheckInQr}><QrCode size={14} /> Create 10-minute QR</button></div><div className="attendance-mark-fields"><label>Learner<select value={learnerId} onChange={(event) => setLearnerId(event.target.value)} required><option value="" disabled>Select a learner</option>{learners.map((learner) => <option key={learner.id} value={learner.id}>{learner.name} · {learner.email}</option>)}</select></label><label>Course<select value={courseId} onChange={(event) => setCourseId(event.target.value)} required><option value="" disabled>Select a course</option>{courses.map((course) => <option key={course.id} value={course.id}>{course.title}</option>)}</select></label><label>Date<input type="date" value={date} onChange={(event) => setDate(event.target.value)} required /></label><label>Status<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="present">Present</option><option value="late">Late</option><option value="absent">Absent</option></select></label><button className="button button-primary" disabled={busy || !learnerId || !courseId}>{busy ? "Saving…" : "Save attendance"}<Check size={15} /></button></div>{qr && <div className="qr-display"><img src={qr.qrDataUrl} alt={`Attendance QR code for ${qr.course}`} /><span><strong>{qr.course}</strong><small>Expires {new Date(qr.expiresAt).toLocaleTimeString()}</small></span></div>}</form>}
     <div className="attendance-cards"><article className="attendance-summary"><div><span className="eyebrow light-eyebrow">{user.role === "coordinator" ? "CAMPUS ATTENDANCE" : user.role === "student" ? "YOUR ATTENDANCE" : "TEAM ATTENDANCE"}</span><h2>{percent}<small>%</small></h2><p>{user.role === "coordinator" ? "A campus-wide view of attendance records." : "Consistency is a kindness to future you."}</p></div><div className="attendance-ring"><span>{records.filter((item) => item.status === "present").length}</span><small>sessions</small></div></article><article className="attendance-note"><span className="note-sun">☼</span><span className="eyebrow">{user.role === "coordinator" ? "MONITORING ONLY" : "A THOUGHT FOR TODAY"}</span><h3>{user.role === "coordinator" ? <>Spot patterns.<br />Offer support.</> : <>Be where your<br />feet are.</>}</h3><p>{user.role === "coordinator" ? "Coordinators can review attendance and alerts; trainers record the class." : "Every session is a chance to try, ask, and find your people."}</p><span className="note-author">A LITTLE REMINDER <b>·</b> ZYNGRAM</span></article></div><section className="panel attendance-table"><div className="panel-heading"><div><span className="eyebrow">{user.role === "coordinator" ? "CAMPUS-WIDE MONITORING" : "YOUR LEARNING FOOTPRINT"}</span><h3>{user.role === "student" ? "Recent sessions" : "Campus attendance"}</h3></div><span className="button button-outline button-small"><CalendarDays size={15} /> All time</span></div><div className="table-wrap"><table><thead><tr><th>DATE</th>{user.role !== "student" && <th>LEARNER</th>}<th>SESSION</th><th>STATUS</th><th>CHECK-IN</th></tr></thead><tbody>{records.map((record) => <tr key={record.id}><td>{new Date(`${record.date}T12:00:00`).toLocaleDateString("en", { weekday: "short", month: "short", day: "numeric" })}</td>{user.role !== "student" && <td>{record.student}</td>}<td>{record.course}</td><td><Pill tone={record.status === "present" ? "green" : record.status === "late" ? "orange" : "pink"}>{record.status}</Pill></td><td><span className="checkin-time"><i />{record.status === "present" ? "On time" : record.status === "late" ? "A little late" : "Not checked in"}</span></td></tr>)}</tbody></table>{!records.length && <Empty icon={CalendarDays} title="No sessions recorded yet." text="Your attendance will find its way here." />}</div></section></div>;
 }
 
@@ -866,6 +900,7 @@ function Profile({ user, updateUser }) {
         <div className="profile-badge-list">{achievements.length ? achievements.map((badge) => <span className="profile-badge" key={badge}><Medal size={15} />{badge}</span>) : <p className="profile-empty-note">Keep learning to earn your first badge.</p>}</div>
         <div className="profile-certificate-list">{certificates.length ? certificates.map((certificate) => <article className="profile-certificate-card" key={certificate.courseId}><span className="profile-certificate-icon"><GraduationCap size={19} /></span><span><strong>{certificate.course}</strong><small>Completed {new Date(certificate.issuedAt).toLocaleDateString("en", { month: "short", year: "numeric" })} · ID {certificate.certificateId}</small></span><a className="button button-outline button-small" href={`/api/certificates/${certificate.courseId}/pdf`}><FileCheck2 size={14} /> View certificate</a></article>) : <p className="profile-empty-note">Course certificates will appear here when you complete all lessons and pass every module assignment.</p>}</div>
       </section>}
+      {user.role === "student" && <StudentPortfolio />}
       </div>
     </div>
   </div>;
@@ -883,6 +918,16 @@ export default function App() {
       if (err.status !== 401) setError(err.message);
     });
   }, []);
+  useEffect(() => {
+    const handleSessionExpired = (event) => {
+      if (!user) return;
+      setUser(null);
+      setPage("overview");
+      setError(`${event.detail?.message || "Your sign-in session has expired."} Please sign in again.`);
+    };
+    window.addEventListener("campus-session-expired", handleSessionExpired);
+    return () => window.removeEventListener("campus-session-expired", handleSessionExpired);
+  }, [user]);
   async function refresh() {
     if (!user || user.mustChangePassword) return;
     const [dashboard, attendance, modules, courses] = await Promise.all([api("/dashboard"), api("/attendance"), api("/modules"), api("/courses")]);

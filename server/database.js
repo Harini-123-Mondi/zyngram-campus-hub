@@ -14,7 +14,7 @@ const platformCollectionNames = new Set([
   "lesson_progress", "quiz_attempts", "learning_paths", "gamification",
   "assignments", "assignment_submissions", "discussions", "notifications", "campus_state",
   "course_modules", "module_attempts", "topic_progress", "admin_audit_logs", "admin_settings",
-  "api_registry", "api_consumers", "api_keys", "api_usage_logs",
+  "api_registry", "api_consumers", "api_keys", "api_usage_logs", "student_portfolios", "checkin_tokens", "user_sessions",
   "placement_companies", "placement_jobs", "placement_drives", "placement_profiles",
   "placement_applications", "placement_interviews", "placement_offers"
 ]);
@@ -140,6 +140,12 @@ export async function initializePlatformData(seeds) {
   await database.collection("api_usage_logs").createIndex({ createdAt: -1 });
   await database.collection("api_usage_logs").createIndex({ apiId: 1, createdAt: -1 });
   await database.collection("api_usage_logs").createIndex({ consumerId: 1, createdAt: -1 });
+  await database.collection("student_portfolios").createIndex({ userId: 1 }, { unique: true });
+  await database.collection("student_portfolios").createIndex({ shareTokenHash: 1 }, { unique: true, sparse: true });
+  await database.collection("checkin_tokens").createIndex({ tokenHash: 1 }, { unique: true });
+  await database.collection("checkin_tokens").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+  await database.collection("user_sessions").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+  await database.collection("user_sessions").createIndex({ userId: 1 });
 }
 
 export async function getPlatformItems(name, filter = {}, sort = { createdAt: -1 }) {

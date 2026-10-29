@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api.js";
+import QrScanner from "./QrScanner.jsx";
 import {
   ArrowRight, Award, BookOpen, BriefcaseBusiness, Building2, CalendarDays, Check, CircleAlert,
   CircleCheck, Clock3, Code2, Download, FileCheck2, FileText, KeyRound, MessageCircle, Plus,
@@ -975,6 +976,7 @@ export function EventsPage({ user }) {
   const [formError, setFormError] = useState("");
   const [busyId, setBusyId] = useState("");
   const [editingId, setEditingId] = useState("");
+  const [eventQr, setEventQr] = useState(null);
   const canManage = ["coordinator", "administrator"].includes(user.role);
   function resetForm() {
     setEditingId("");
@@ -1001,6 +1003,21 @@ export function EventsPage({ user }) {
     catch (err) { setFormError(err.message); }
     finally { setBusyId(""); }
   }
+  async function createEventQr(item) {
+    setBusyId(item.id); setFormError(""); setNotice(""); setEventQr(null);
+    try { setEventQr({ eventId: item.id, ...await api(`/events/${item.id}/check-in-code`, { method: "POST", body: "{}" }) }); }
+    catch (err) { setFormError(err.message); }
+    finally { setBusyId(""); }
+  }
+  async function checkInEvent(item, code) {
+    setBusyId(item.id); setFormError(""); setNotice("");
+    try {
+      await api(`/events/${item.id}/check-in`, { method: "POST", body: JSON.stringify({ code }) });
+      setNotice(`You're checked in for ${item.title}.`);
+      await reload();
+    } catch (err) { setFormError(err.message); }
+    finally { setBusyId(""); }
+  }
   function edit(item) {
     setEditingId(item.id);
     setForm({
@@ -1024,8 +1041,9 @@ export function EventsPage({ user }) {
       {loading && <p>Loading campus events…</p>}
       {!loading && !error && !data.length && <div className="empty-state"><CalendarDays size={23} /><strong>{canManage ? "No upcoming events." : "Nothing scheduled yet."}</strong><p>{canManage ? "Publish a new campus event above to let students register." : "Check back when a coordinator publishes a new campus event."}</p></div>}
       {data.map((item) => <article className="panel event-card" key={item.id}><div className="event-card-date"><strong>{new Date(`${item.date}T12:00:00`).toLocaleDateString("en", { day: "2-digit" })}</strong><small>{new Date(`${item.date}T12:00:00`).toLocaleDateString("en", { month: "short" })}</small></div><div className="event-card-main"><span className="eyebrow">{item.category}</span><h3>{item.title}</h3><p>{item.description}</p><small>{new Date(`${item.date}T12:00:00`).toLocaleDateString("en", { weekday: "long", year: "numeric", month: "long", day: "numeric" })} · {item.startTime} · {item.location}</small><small>{item.registrationCount} / {item.capacity} places reserved</small></div>
-        {user.role === "student" && <button className="button button-primary button-small" disabled={item.registered || item.registrationCount >= item.capacity || busyId === item.id} onClick={() => register(item)}>{item.registered ? "Registered" : item.registrationCount >= item.capacity ? "Full" : "Register"}</button>}
-        {canManage && <><button className="button button-outline button-small" disabled={busyId === item.id} onClick={() => edit(item)}>Edit</button><button className="button button-outline button-small" disabled={busyId === item.id} onClick={() => remove(item)}>Cancel event</button></>}
+        {user.role === "student" && <><button className="button button-primary button-small" disabled={item.registered || item.registrationCount >= item.capacity || busyId === item.id} onClick={() => register(item)}>{item.registered ? "Registered" : item.registrationCount >= item.capacity ? "Full" : "Register"}</button>{item.registered && <span className="event-checkin-status">{item.checkedIn ? "Checked in" : "Registered attendee"}</span>}{item.registered && !item.checkedIn && <QrScanner label={`Check in for ${item.title}`} onScan={(code) => checkInEvent(item, code)} />}</>}
+        {canManage && <><button className="button button-outline button-small" disabled={busyId === item.id || item.date !== new Date().toISOString().slice(0, 10)} onClick={() => createEventQr(item)}>{busyId === item.id ? "Creating…" : "Event check-in QR"}</button><button className="button button-outline button-small" disabled={busyId === item.id} onClick={() => edit(item)}>Edit</button><button className="button button-outline button-small" disabled={busyId === item.id} onClick={() => remove(item)}>Cancel event</button></>}
+        {eventQr?.eventId === item.id && <div className="qr-display"><img src={eventQr.qrDataUrl} alt={`Check-in QR code for ${item.title}`} /><span><strong>{item.title}</strong><small>Expires {new Date(eventQr.expiresAt).toLocaleTimeString()}</small></span></div>}
       </article>)}
     </section>
   </div>;
