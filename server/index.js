@@ -9,6 +9,10 @@ import PDFDocument from "pdfkit";
 import { courseIntroductions, courseModules } from "./course-curriculum.js";
 import * as database from "./database.js";
 import { careerPaths, mockInterviewQuestions, platformSeeds, roleAccounts } from "./platform-data.js";
+import {
+  initialManagedApis, managedApiEnvironments, managedApiMethods, toOpenApiPath,
+  validateManagedApi, validateManagedConsumer
+} from "./api-management.js";
 import { isAllowedRequestOrigin, isZinEmail, isZinId, safeText, validatePassword, validateRegistration } from "./validation.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -27,6 +31,7 @@ const app = express();
 const sessions = new Map();
 const loginAttempts = new Map();
 const assistantRequests = new Map();
+const apiRateWindows = new Map();
 
 app.disable("x-powered-by");
 app.use(express.json({ limit: "4mb" }));
@@ -142,6 +147,37 @@ const auditAdminAction = async (user, action, targetType, targetId, detail) => d
   id: crypto.randomUUID(), actorId: user.id, actorName: user.name, action, targetType, targetId,
   detail: String(detail).slice(0, 300), outcome: "success", createdAt: new Date().toISOString()
 });
+const auditApiManagementAction = (user, action, targetType, targetId, detail) => auditAdminAction(
+  user, action, targetType, targetId, detail
+);
+const issueConsumerKey = async (consumer, user) => {
+  const key = `zhub_live_${crypto.randomBytes(32).toString("base64url")}`;
+  const record = {
+    id: crypto.randomUUID(),
+    consumerId: consumer.id,
+    keyHash: crypto.createHash("sha256").update(key).digest("hex"),
+    keyPrefix: key.slice(0, 18),
+    createdBy: user.id
+  };
+  await database.createPlatformItem("api_keys", record);
+  return { id: record.id, key, keyPrefix: record.keyPrefix };
+};
+const recordApiUsage = (req, res, apiId, getConsumerId, startedAt) => {
+  res.once("finish", () => {
+    const statusCode = res.statusCode;
+    database.createPlatformItem("api_usage_logs", {
+      id: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      apiId,
+      consumerId: getConsumerId(),
+      method: req.method,
+      endpoint: req.originalUrl.split("?")[0],
+      statusCode,
+      durationMs: Math.max(0, Date.now() - startedAt),
+      outcome: statusCode >= 400 ? "failure" : "success"
+    }).catch((error) => console.error("Unable to record API management request activity.", error));
+  });
+};
 const getAdminSettings = async () => await database.getPlatformItem("admin_settings", { id: "main" })
   || { sessionHours: SESSION_TTL / (60 * 60 * 1000), minimumPasswordLength: 8, applicationName: "Zyngram Campus Hub" };
 const validateCampusPassword = async (password) => {
@@ -241,7 +277,11 @@ try {
   }
   if (courseOwnersUpdated) await database.saveCampusData(data);
   await migrateLegacyZinIds();
-  await database.initializePlatformData({ ...platformSeeds, course_modules: courseModules });
+  await database.initializePlatformData({
+    ...platformSeeds,
+    course_modules: courseModules,
+    api_registry: initialManagedApis
+  });
 } catch (error) {
   console.error("Unable to initialize MongoDB. Check the MongoDB service and MONGODB_* values in .env.", error);
   process.exit(1);
@@ -257,6 +297,343 @@ app.use("/api", (req, res, next) => {
   }
   next();
 });
+
+const apiKeyDemoGate = (apiId) => asyncRoute(async (req, res, next) => {
+  const startedAt = Date.now();
+  let consumerId = null;
+  recordApiUsage(req, res, apiId, () => consumerId, startedAt);
+
+  const bodyLength = Buffer.byteLength(JSON.stringify(req.body ?? null) || "", "utf8");
+  if (bodyLength > 16 * 1024 || Number(req.get("content-length") || 0) > 16 * 1024) {
+    return res.status(413).json({ error: "Request body must not exceed 16 KB." });
+  }
+
+  const authorization = req.get("authorization") || "";
+  const suppliedKey = req.get("x-api-key")
+    || (authorization.startsWith("ApiKey ") ? authorization.slice("ApiKey ".length).trim() : "");
+  if (!suppliedKey || suppliedKey.length > 200) {
+    return res.status(401).json({ error: "A valid API key is required." });
+  }
+
+  const keyHash = crypto.createHash("sha256").update(suppliedKey).digest("hex");
+  const storedKey = await database.getPlatformItem("api_keys", { keyHash, revokedAt: { $exists: false } });
+  if (!storedKey) return res.status(401).json({ error: "A valid API key is required." });
+
+  const consumer = await database.getPlatformItem("api_consumers", { id: storedKey.consumerId });
+  consumerId = storedKey.consumerId;
+  if (!consumer || consumer.status !== "active") {
+    return res.status(403).json({ error: "This API consumer is inactive or access has been revoked." });
+  }
+
+  const api = await database.getPlatformItem("api_registry", { id: apiId });
+  if (!api || api.status !== "active"
+    || api.method !== req.method
+    || !consumer.allowedApiIds.includes(apiId)
+    || !consumer.allowedMethods.includes(req.method)) {
+    return res.status(403).json({ error: "This consumer is not permitted to use this endpoint and method." });
+  }
+
+  const now = Date.now();
+  const minute = Math.floor(now / 60000) * 60000;
+  const rateWindow = apiRateWindows.get(consumer.id);
+  const currentWindow = rateWindow?.startedAt === minute
+    ? rateWindow
+    : { startedAt: minute, count: 0 };
+  if (currentWindow.count >= consumer.rateLimit) {
+    const retryAfter = Math.max(1, Math.ceil((minute + 60000 - now) / 1000));
+    res.set({ "RateLimit-Limit": String(consumer.rateLimit), "Retry-After": String(retryAfter) });
+    return res.status(429).json({ error: "Consumer rate limit exceeded. Try again after the current minute." });
+  }
+
+  currentWindow.count += 1;
+  apiRateWindows.set(consumer.id, currentWindow);
+  if (apiRateWindows.size > 10000) {
+    for (const [id, window] of apiRateWindows) {
+      if (window.startedAt + 60000 <= now) apiRateWindows.delete(id);
+    }
+  }
+  res.set({
+    "RateLimit-Limit": String(consumer.rateLimit),
+    "RateLimit-Remaining": String(Math.max(0, consumer.rateLimit - currentWindow.count))
+  });
+  return next();
+});
+
+app.get("/api/demo/secure/profile", apiKeyDemoGate("api-demo-secure-profile"), (_req, res) => res.json({
+  demo: true,
+  profile: { displayName: "API Management Demo", access: "consumer-key protected" }
+}));
+app.get("/api/demo/secure/modules", apiKeyDemoGate("api-demo-secure-modules"), asyncRoute(async (_req, res) => {
+  const modules = await database.getModules();
+  return res.json({ demo: true, modules: modules.map(({ id, title, category }) => ({ id, title, category })) });
+}));
+
+const authenticateSession = (req, res, next) => {
+  if (req.path === "/health" || req.path === "/auth/login" || req.path === "/auth/logout") return next();
+  const token = getCookie(req, SESSION_COOKIE);
+  const session = token && sessions.get(token);
+  if (!session || session.expiresAt < Date.now()) {
+    if (token) sessions.delete(token);
+    return res.status(401).json({ error: "Please sign in to continue." });
+  }
+  const user = data.users.find((candidate) => candidate.id === session.userId);
+  if (!user) return res.status(401).json({ error: "Your session is no longer valid. Please sign in again." });
+  if (user.active === false) {
+    sessions.delete(token);
+    return res.status(403).json({ error: "This account is inactive. Contact your campus administrator." });
+  }
+  req.user = publicUser(user);
+  if (user.mustChangePassword && req.path !== "/auth/me" && req.path !== "/auth/change-password") {
+    return res.status(403).json({ error: "Choose a new password to continue.", code: "PASSWORD_SETUP_REQUIRED" });
+  }
+  return next();
+};
+
+app.get("/api/admin/apis", authenticateSession, allowedRoles("administrator"), asyncRoute(async (_req, res) => {
+  return res.json(await database.getPlatformItems("api_registry", {}, { module: 1, name: 1 }));
+}));
+app.post("/api/admin/apis", authenticateSession, allowedRoles("administrator"), asyncRoute(async (req, res) => {
+  const validationError = validateManagedApi(req.body);
+  if (validationError) return res.status(400).json({ error: validationError });
+  const api = {
+    id: req.body.id.trim(),
+    name: req.body.name.trim(),
+    description: req.body.description.trim(),
+    module: req.body.module.trim(),
+    baseUrl: req.body.baseUrl.trim(),
+    endpointPath: req.body.endpointPath.trim(),
+    method: req.body.method.toUpperCase(),
+    version: req.body.version.trim(),
+    environment: req.body.environment,
+    authRequired: req.body.authRequired,
+    status: req.body.status
+  };
+  try {
+    await database.createPlatformItem("api_registry", api);
+  } catch (error) {
+    if (error.code === 11000) return res.status(409).json({ error: "An API already uses that identifier." });
+    throw error;
+  }
+  await auditApiManagementAction(req.user, "created_api", "api", api.id, `${api.method} ${api.baseUrl}${api.endpointPath}`);
+  return res.status(201).json(api);
+}));
+app.patch("/api/admin/apis/:apiId", authenticateSession, allowedRoles("administrator"), asyncRoute(async (req, res) => {
+  const current = await database.getPlatformItem("api_registry", { id: req.params.apiId });
+  if (!current) return res.status(404).json({ error: "That API could not be found." });
+  const candidate = { ...current, ...req.body, id: current.id };
+  candidate.isMock = current.isMock;
+  const validationError = validateManagedApi(candidate);
+  if (validationError) return res.status(400).json({ error: validationError });
+  const api = {
+    ...candidate,
+    name: candidate.name.trim(),
+    description: candidate.description.trim(),
+    module: candidate.module.trim(),
+    baseUrl: candidate.baseUrl.trim(),
+    endpointPath: candidate.endpointPath.trim(),
+    method: candidate.method.toUpperCase(),
+    version: candidate.version.trim()
+  };
+  delete api.createdAt;
+  delete api.updatedAt;
+  await database.updatePlatformItem("api_registry", { id: current.id }, api);
+  await auditApiManagementAction(req.user, "updated_api", "api", api.id, `${api.method} ${api.baseUrl}${api.endpointPath}`);
+  return res.json(api);
+}));
+app.delete("/api/admin/apis/:apiId", authenticateSession, allowedRoles("administrator"), asyncRoute(async (req, res) => {
+  const current = await database.getPlatformItem("api_registry", { id: req.params.apiId });
+  if (!current) return res.status(404).json({ error: "That API could not be found." });
+  const consumers = await database.getPlatformItems("api_consumers", { allowedApiIds: current.id });
+  if (consumers.length) return res.status(409).json({ error: "Remove this API from its consumers before deleting it." });
+  await database.deletePlatformItem("api_registry", { id: current.id });
+  await auditApiManagementAction(req.user, "deleted_api", "api", current.id, current.name);
+  return res.json({ ok: true });
+}));
+app.get("/api/admin/apis/openapi.json", authenticateSession, allowedRoles("administrator"), asyncRoute(async (_req, res) => {
+  const apis = await database.getPlatformItems("api_registry", {}, { module: 1, name: 1 });
+  const paths = {};
+  const errorResponse = (description) => ({
+    description,
+    content: { "application/json": { schema: { type: "object", properties: { error: { type: "string" } } } } }
+  });
+  for (const api of apis.filter((entry) => entry.status === "active")) {
+    const url = new URL(`${api.baseUrl.replace(/\/+$/, "")}${api.endpointPath}`, "https://campus-hub.invalid");
+    const endpoint = toOpenApiPath(url.pathname.replace(/^\/api/, "") || "/");
+    const method = api.method.toLowerCase();
+    paths[endpoint] ||= {};
+    const pathParameters = [...api.endpointPath.matchAll(/:([A-Za-z0-9_]+)/g)].map(([, name]) => ({
+      name,
+      in: "path",
+      required: true,
+      description: `${name} identifier.`,
+      schema: { type: "string" }
+    }));
+    paths[endpoint][method] = {
+      operationId: api.id,
+      summary: api.name,
+      description: api.description,
+      tags: [api.module],
+      parameters: pathParameters,
+      security: api.isMock
+        ? [{ apiKey: [] }]
+        : api.authRequired ? [{ campusSession: [] }] : [],
+      ...(method === "get" ? {} : {
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { type: "object", additionalProperties: true },
+              example: {}
+            }
+          }
+        }
+      }),
+      responses: {
+        "200": { description: "Request completed successfully.", content: { "application/json": { schema: { type: "object", additionalProperties: true }, example: { ok: true } } } },
+        "201": { description: "Resource created." },
+        "400": errorResponse("Invalid request data."),
+        "401": errorResponse(api.isMock ? "API key is missing or invalid." : "A Campus Hub session is required."),
+        "403": errorResponse("The account or consumer does not have permission for this operation."),
+        "404": errorResponse("The requested resource was not found."),
+        "409": errorResponse("The request conflicts with an existing resource or policy."),
+        ...(api.isMock ? { "429": errorResponse("The consumer request limit was exceeded.") } : {}),
+        "500": errorResponse("The server could not complete the request.")
+      }
+    };
+  }
+  return res.json({
+    openapi: "3.0.3",
+    info: { title: "Zyngram Campus Hub API", version: "v1" },
+    servers: [{ url: "/api" }],
+    paths,
+    components: {
+      securitySchemes: {
+        apiKey: { type: "apiKey", in: "header", name: "X-API-Key", description: "Consumer keys are issued once in the API Management dashboard." },
+        campusSession: { type: "apiKey", in: "cookie", name: SESSION_COOKIE, description: "Sign in to Campus Hub to establish a session." }
+      }
+    }
+  });
+}));
+app.get("/api/admin/consumers", authenticateSession, allowedRoles("administrator"), asyncRoute(async (_req, res) => {
+  const [consumers, keys] = await Promise.all([
+    database.getPlatformItems("api_consumers", {}, { createdAt: -1 }),
+    database.getPlatformItems("api_keys", {}, { createdAt: -1 })
+  ]);
+  return res.json(consumers.map((consumer) => ({
+    ...consumer,
+    keys: keys.filter((key) => key.consumerId === consumer.id)
+      .map(({ id, keyPrefix, createdAt, revokedAt }) => ({ id, keyPrefix, createdAt, revokedAt }))
+  })));
+}));
+app.post("/api/admin/consumers", authenticateSession, allowedRoles("administrator"), asyncRoute(async (req, res) => {
+  const apis = await database.getPlatformItems("api_registry");
+  const validationError = validateManagedConsumer(
+    req.body,
+    new Set(apis.filter((api) => api.isMock).map((api) => api.id))
+  );
+  if (validationError) return res.status(400).json({ error: validationError });
+  const consumer = {
+    id: req.body.id.trim(),
+    name: req.body.name.trim(),
+    description: (req.body.description || "").trim(),
+    allowedApiIds: [...new Set(req.body.allowedApiIds)],
+    allowedMethods: [...new Set(req.body.allowedMethods.map((method) => method.toUpperCase()))],
+    rateLimit: Number(req.body.rateLimit),
+    status: req.body.status
+  };
+  try {
+    await database.createPlatformItem("api_consumers", consumer);
+  } catch (error) {
+    if (error.code === 11000) return res.status(409).json({ error: "A consumer already uses that identifier." });
+    throw error;
+  }
+  await auditApiManagementAction(req.user, "created_api_consumer", "api_consumer", consumer.id, consumer.name);
+  return res.status(201).json(consumer);
+}));
+app.patch("/api/admin/consumers/:consumerId", authenticateSession, allowedRoles("administrator"), asyncRoute(async (req, res) => {
+  const current = await database.getPlatformItem("api_consumers", { id: req.params.consumerId });
+  if (!current) return res.status(404).json({ error: "That API consumer could not be found." });
+  const apis = await database.getPlatformItems("api_registry");
+  const candidate = { ...current, ...req.body, id: current.id };
+  const validationError = validateManagedConsumer(
+    candidate,
+    new Set(apis.filter((api) => api.isMock).map((api) => api.id))
+  );
+  if (validationError) return res.status(400).json({ error: validationError });
+  const consumer = {
+    ...candidate,
+    name: candidate.name.trim(),
+    description: candidate.description.trim(),
+    allowedApiIds: [...new Set(candidate.allowedApiIds)],
+    allowedMethods: [...new Set(candidate.allowedMethods.map((method) => method.toUpperCase()))],
+    rateLimit: Number(candidate.rateLimit)
+  };
+  delete consumer.keys;
+  delete consumer.createdAt;
+  delete consumer.updatedAt;
+  await database.updatePlatformItem("api_consumers", { id: current.id }, consumer);
+  await auditApiManagementAction(req.user, "updated_api_consumer", "api_consumer", consumer.id, `${consumer.name}: ${consumer.status}`);
+  return res.json(consumer);
+}));
+app.delete("/api/admin/consumers/:consumerId", authenticateSession, allowedRoles("administrator"), asyncRoute(async (req, res) => {
+  const consumer = await database.getPlatformItem("api_consumers", { id: req.params.consumerId });
+  if (!consumer) return res.status(404).json({ error: "That API consumer could not be found." });
+  const keys = await database.getPlatformItems("api_keys", { consumerId: consumer.id, revokedAt: { $exists: false } });
+  await Promise.all(keys.map((key) => database.updatePlatformItem(
+    "api_keys", { id: key.id }, { revokedAt: new Date().toISOString(), revokedBy: req.user.id }
+  )));
+  await database.deletePlatformItem("api_consumers", { id: consumer.id });
+  await auditApiManagementAction(req.user, "deleted_api_consumer", "api_consumer", consumer.id, consumer.name);
+  return res.json({ ok: true });
+}));
+app.post("/api/admin/consumers/:consumerId/keys", authenticateSession, allowedRoles("administrator"), asyncRoute(async (req, res) => {
+  const consumer = await database.getPlatformItem("api_consumers", { id: req.params.consumerId });
+  if (!consumer) return res.status(404).json({ error: "That API consumer could not be found." });
+  if (consumer.status !== "active") return res.status(409).json({ error: "Activate the consumer before issuing an API key." });
+  const existingKeys = await database.getPlatformItems("api_keys", { consumerId: consumer.id, revokedAt: { $exists: false } });
+  await Promise.all(existingKeys.map((key) => database.updatePlatformItem(
+    "api_keys", { id: key.id }, { revokedAt: new Date().toISOString(), revokedBy: req.user.id }
+  )));
+  const issued = await issueConsumerKey(consumer, req.user);
+  await auditApiManagementAction(req.user, "issued_api_key", "api_consumer", consumer.id, `Issued ${issued.keyPrefix}…`);
+  return res.status(201).json(issued);
+}));
+app.delete("/api/admin/consumers/:consumerId/keys/:keyId", authenticateSession, allowedRoles("administrator"), asyncRoute(async (req, res) => {
+  const key = await database.getPlatformItem("api_keys", { id: req.params.keyId, consumerId: req.params.consumerId });
+  if (!key) return res.status(404).json({ error: "That API key could not be found." });
+  if (!key.revokedAt) await database.updatePlatformItem(
+    "api_keys", { id: key.id }, { revokedAt: new Date().toISOString(), revokedBy: req.user.id }
+  );
+  await auditApiManagementAction(req.user, "revoked_api_key", "api_consumer", key.consumerId, `Revoked ${key.keyPrefix}…`);
+  return res.json({ ok: true });
+}));
+app.get("/api/admin/api-usage", authenticateSession, allowedRoles("administrator"), asyncRoute(async (req, res) => {
+  const limitValue = Number(req.query.limit || 100);
+  const limit = Number.isInteger(limitValue) ? Math.min(200, Math.max(1, limitValue)) : 100;
+  const [logs, apis] = await Promise.all([
+    database.getPlatformItems("api_usage_logs", {}, { createdAt: -1 }),
+    database.getPlatformItems("api_registry")
+  ]);
+  const apiNames = new Map(apis.map((api) => [api.id, api.name]));
+  const filtered = logs.filter((log) => (!req.query.apiId || log.apiId === req.query.apiId)
+    && (!req.query.consumerId || log.consumerId === req.query.consumerId));
+  return res.json({
+    total: filtered.length,
+    summary: {
+      total: filtered.length,
+      successful: filtered.filter((log) => log.outcome === "success").length,
+      failed: filtered.filter((log) => log.outcome === "failure").length,
+      successRate: filtered.length
+        ? Math.round(filtered.filter((log) => log.outcome === "success").length / filtered.length * 100)
+        : 0
+    },
+    entries: filtered.slice(0, limit).map((log) => ({
+      ...log,
+      apiName: apiNames.get(log.apiId) || log.apiId,
+      timestamp: log.timestamp || log.createdAt
+    }))
+  });
+}));
 
 app.post("/api/auth/login", asyncRoute(async (req, res) => {
   const key = req.ip;
@@ -348,26 +725,7 @@ app.post("/api/auth/logout", (req, res) => {
   res.json({ ok: true });
 });
 
-app.use("/api", (req, res, next) => {
-  if (req.path === "/health" || req.path === "/auth/login" || req.path === "/auth/logout") return next();
-  const token = getCookie(req, SESSION_COOKIE);
-  const session = token && sessions.get(token);
-  if (!session || session.expiresAt < Date.now()) {
-    if (token) sessions.delete(token);
-    return res.status(401).json({ error: "Please sign in to continue." });
-  }
-  const user = data.users.find((candidate) => candidate.id === session.userId);
-  if (!user) return res.status(401).json({ error: "Your session is no longer valid. Please sign in again." });
-  if (user.active === false) {
-    sessions.delete(token);
-    return res.status(403).json({ error: "This account is inactive. Contact your campus administrator." });
-  }
-  req.user = publicUser(user);
-  if (user.mustChangePassword && req.path !== "/auth/me" && req.path !== "/auth/change-password") {
-    return res.status(403).json({ error: "Choose a new password to continue.", code: "PASSWORD_SETUP_REQUIRED" });
-  }
-  next();
-});
+app.use("/api", authenticateSession);
 
 app.get("/api/auth/me", (req, res) => res.json({ user: req.user }));
 app.post("/api/auth/change-password", asyncRoute(async (req, res) => {

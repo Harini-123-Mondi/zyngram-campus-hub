@@ -9,7 +9,7 @@
     "dev:server": "node --watch-path=server/index.js server/index.js",
     "migrate:mysql-to-mongodb": "node server/migrate-mysql-to-mongodb.js",
     "build": "vite build",
-    "test": "node --test server/validation.test.js",
+    "test": "node --test server/validation.test.js server/api-management.test.js",
     "test:integration": "node --test server/api.integration.test.js",
     "start": "node server/index.js"
   },

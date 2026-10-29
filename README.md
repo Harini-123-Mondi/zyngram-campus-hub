@@ -11,6 +11,7 @@ A local, responsive Campus Hub MVP built with React, Node.js/Express, and MongoD
 - A dedicated trainer workspace with a Trainer ID, assigned-course and batch overview, student progress and attendance, course creation, notes/PDF/link sharing, batch-scoped attendance, assignment evaluation, editable class schedules, course announcements, student Q&A, reports, profile, support, and secure logout. Trainer course views do not show student certificate screens; assignment creation and evaluation remain available in their own workspace.
 - A campus coordinator workspace with a campus-wide activity dashboard, student search/filter and batch reassignment, read-only trainer profiles and workload, batch creation/editing/status and capacity management, weekly timetable scheduling with trainer/room conflict checks, attendance monitoring and alerts, assignment follow-up without grading access, editable campus events, batch-targeted announcements, request status tracking, campus reports, notifications, coordinator ID, and support. Coordinator authorization cannot change roles or record attendance; administrators retain account-permission control and trainers retain assignment grading.
 - An administrator workspace with a live campus dashboard and clickable counts, account creation/search/profile/role/access management, password resets, role-permission guidance, course catalog management, batch and schedule tools, attendance/reports, role-targeted announcements, support requests, security policy settings, and searchable administrative audit history. Administrator-only APIs enforce access on the server, password hashes are never exposed, inactive accounts cannot sign in, and account changes revoke active sessions.
+- An administrator-only API management console with API and consumer CRUD, OpenAPI JSON export, hashed consumer API keys that are shown only once, key rotation/revocation, per-consumer request limits, and request activity logs. API keys currently protect the two seeded secure demo endpoints; the remaining Campus Hub APIs continue to use signed-in sessions.
 - A placement-officer workspace with dynamic placement metrics, private student placement profiles and authorized resume review, company contacts, jobs/internships, registration-driven placement drives, application status and shortlist workflows, interview scheduling and attendance, verified offers and joining status, eligible-student notifications, career preparation resources, and placement analytics. Students maintain skills, CGPA, graduation year, and course details, then apply or register only when eligible; duplicate applications are prevented and placement APIs enforce officer/student permissions on the server.
 - Every seeded software course has a course introduction and a full-width four-module, eight-week roadmap. Each topic includes an explanation and a related YouTube video search; learners mark every topic complete before the module assignment unlocks. Each assignment mixes four concept MCQs with a code-reading MCQ about output, bugs or algorithm behavior. A learner must score at least 70% to pass and unlock the next module; failed assessments can be retried. The certificates page tracks lesson and assignment completion for each enrolled course, then shows and downloads a personalized landscape PDF with the learner name, completed course, award date, unique certificate ID and completion seal.
 - Campus events support coordinator/admin publishing, student registration, and capacity limits. Coordinators/admins can create course batches, assign trainers, and allocate learners with enrollment and capacity checks.
@@ -91,7 +92,7 @@ npm run test:integration
 npm run build
 ```
 
-The API integration test uses an isolated temporary MongoDB database, checks registration and login failures, role restrictions, profile editing, lessons/notes/quizzes and the four-module assignment roadmap for every course, course introductions, explained topics and related videos, mixed conceptual/code-reading assessments, topic-completion gating, module locks and score-based progression, eligible and ineligible PDF certificates, local assistant responses, assignment submit/review protections, event registration capacity, batch trainer/learner allocation, study groups, placement progress, attendance marking, admin module CRUD, and saved data after an API restart, then removes its temporary database and sample-data file.
+The API integration test uses an isolated temporary MongoDB database, checks registration and login failures, role restrictions, profile editing, lessons/notes/quizzes and the four-module assignment roadmap for every course, course introductions, explained topics and related videos, mixed conceptual/code-reading assessments, topic-completion gating, module locks and score-based progression, eligible and ineligible PDF certificates, local assistant responses, assignment submit/review protections, event registration capacity, batch trainer/learner allocation, study groups, placement progress, attendance marking, admin module CRUD, API registry CRUD and duplicate rejection, consumer/key issuance and hash-only persistence, invalid-key authentication, endpoint permission enforcement, rate limiting, key rotation/revocation, consumer suspension/reactivation, API usage metrics, OpenAPI path/security documentation, and saved data after an API restart, then removes its temporary database and sample-data file.
 
 For the browser demonstration, follow the checklist above:
 
@@ -111,9 +112,35 @@ The automated suites cover validation, authentication and role access, profile a
 MongoDB collections created by the app:
 
 - `users`, `modules`, and `campus_state`: accounts and role/profile data, learning modules, and the existing course/task/attendance/announcement workflow state.
-- Platform collections for course modules, topic completion and assignment attempts, lessons, resources, quizzes, timetable, assignments/submissions, events and registrations, course batches and allocations, discussion groups/posts, learning progress, gamification, placement companies/jobs/drives/profiles/applications/interviews/offers, administrator audit logs, and system settings.
+- Platform collections for course modules, topic completion and assignment attempts, lessons, resources, quizzes, timetable, assignments/submissions, events and registrations, course batches and allocations, discussion groups/posts, learning progress, gamification, placement companies/jobs/drives/profiles/applications/interviews/offers, administrator audit logs, system settings, and API management (`api_registry`, `api_consumers`, `api_keys`, `api_usage_logs`).
 
 The legacy JSON file is used as the initial seed/import source when `campus_state` is first created; subsequent workflow changes persist in MongoDB. MongoDB user records and platform collections are persisted independently. The server enforces role checks for protected actions.
+
+## Day 24 — API Management
+
+The administrator sidebar includes an **API Management** page with a registry, consumer/key controls, and request activity:
+
+- The registry persists API identifiers, names, descriptions, owning modules, base URLs, endpoint paths, methods, versions, environments, auth requirements, statuses, and MongoDB timestamps. Search and method/module/status filters work with paginated results. The initial records map to routes implemented in this project; the two `/api/demo/secure/*` records are explicitly labelled demonstrations.
+- Consumer records store their allowed demo API IDs and methods, active/suspended/revoked status, and a per-minute request limit. The current API-key gateway is deliberately limited to those two demo endpoints; Campus Hub application APIs continue to require their existing signed-in session and role checks.
+- API keys are generated with cryptographic randomness, stored only as SHA-256 hashes, and shown once on issue. Rotation and individual revocation invalidate prior keys. A suspended consumer receives `403`; missing/invalid/revoked credentials receive `401`, and a configured limit returns `429`.
+- Each protected demo request is logged with timestamp, API ID, consumer ID when known, method, endpoint, HTTP status, duration, and success/failure outcome. The dashboard calculates totals, successes, failures, and success rate from those records.
+- Admins can download an OpenAPI 3.0 JSON document with endpoint descriptions, path parameters, session/API-key schemes, request-body examples, and common response codes.
+
+### API-management walkthrough (PowerShell)
+
+1. Start MongoDB, run `npm run dev`, and sign in as the local administrator. Open **API Management → Consumers & keys** and create a consumer with one or both demo APIs, `GET`, and a low request limit (for example `1` per minute).
+2. Select **Rotate / issue key** and copy the displayed key immediately. The database stores only its hash. Call an allowed endpoint:
+
+   ```powershell
+   $apiKey = "<paste-the-one-time-key>"
+   Invoke-RestMethod http://localhost:4000/api/demo/secure/profile -Headers @{ "X-API-Key" = $apiKey }
+   ```
+
+3. Omit the header or provide an incorrect key to verify `401`. Permit only the modules demo API and request the profile demo API to verify `403`. Call an allowed endpoint again within the same minute to verify `429` and the `Retry-After` header.
+4. Suspend the consumer and retry its valid key to verify `403`; reactivate it, revoke the key, then retry to verify `401`. Review the **Request logs** tab for the recorded outcomes and statistics.
+5. In **API Management → API registry**, use search and the method/module/status filters; create, edit/archive, or delete an API record. Download **OpenAPI JSON** to review docs for the active registry entries.
+
+The project does not claim that production APIs accept consumer API keys: key enforcement is only wired to the clearly labelled protected demo endpoints. Rate-limit counters are in memory for this single-process prototype and reset when the server restarts; use a shared store before deploying multiple server instances.
 
 ### One-time import from an existing MySQL database
 

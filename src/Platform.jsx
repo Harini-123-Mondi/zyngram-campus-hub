@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { api } from "./api.js";
 import {
   ArrowRight, Award, BookOpen, BriefcaseBusiness, Building2, CalendarDays, Check, CircleAlert,
-  CircleCheck, Clock3, Download, FileCheck2, FileText, MessageCircle, Plus, Search, Send,
-  ShieldCheck, Sparkles, Users
+  CircleCheck, Clock3, Code2, Download, FileCheck2, FileText, KeyRound, MessageCircle, Plus,
+  Search, Send, ShieldCheck, Sparkles, Trash2, Users
 } from "lucide-react";
 
 function Heading({ eyebrow, title, subtitle }) {
@@ -16,6 +16,10 @@ function FormNotice({ error, notice }) {
 
 function StatusTag({ children, tone = "default" }) {
   return <span className={`pill pill-${tone}`}>{children}</span>;
+}
+
+function Empty({ icon: Icon, title, text }) {
+  return <div className="empty-state"><span><Icon size={22} /></span><strong>{title}</strong><p>{text}</p></div>;
 }
 
 function useLoad(path, initial) {
@@ -525,6 +529,232 @@ export function AdminSettingsPage() {
   return <div className="page-content platform-page"><Heading eyebrow="SYSTEM SETTINGS & SECURITY" title={<>A safer campus, <em>thoughtfully configured.</em></>} subtitle="Manage app identity, session duration, and minimum password length. Secrets and database credentials stay in server environment variables." />
     {error && <FormNotice error={error} />}{loading ? <section className="panel">Loading system settings…</section> : <form className="panel platform-form" onSubmit={save}><div className="panel-heading"><div><span className="eyebrow">APPLICATION POLICY</span><h3>System defaults</h3></div><ShieldCheck size={19} /></div><div className="platform-form-grid"><label>Application name<input maxLength="80" value={form.applicationName} onChange={(event) => setForm({ ...form, applicationName: event.target.value })} required /></label><label>Session duration (hours)<input type="number" min="1" max="24" value={form.sessionHours} onChange={(event) => setForm({ ...form, sessionHours: event.target.value })} required /></label><label>Minimum password length<input type="number" min="8" max="16" value={form.minimumPasswordLength} onChange={(event) => setForm({ ...form, minimumPasswordLength: event.target.value })} required /></label></div><FormNotice notice={notice} /><button className="button button-primary" disabled={busy}>{busy ? "Saving…" : "Save security settings"} <Check size={14} /></button><p className="field-hint">Existing sessions keep their current expiry; this duration applies to new sign-ins.</p></form>}
     <section className="panel permission-security-note"><ShieldCheck size={18} /><span><strong>Keep credentials private</strong><small>Database URIs, AI API keys, and signing secrets must be configured only in server-side environment variables and never in frontend code.</small></span></section>
+  </div>;
+}
+
+const emptyManagedApi = {
+  id: "", name: "", description: "", module: "", baseUrl: "/api", endpointPath: "",
+  method: "GET", version: "v1", environment: "development", authRequired: true, status: "active"
+};
+const emptyManagedConsumer = {
+  id: "", name: "", description: "", allowedApiIds: [], allowedMethods: ["GET"],
+  rateLimit: 60, status: "active"
+};
+
+export function AdminApiManagementPage() {
+  const { data: apis, loading: apisLoading, error: apisError, reload: reloadApis } = useLoad("/admin/apis", []);
+  const { data: consumers, loading: consumersLoading, error: consumersError, reload: reloadConsumers } = useLoad("/admin/consumers", []);
+  const { data: usage, loading: usageLoading, error: usageError, reload: reloadUsage } = useLoad("/admin/api-usage", {
+    total: 0, summary: { total: 0, successful: 0, failed: 0, successRate: 0 }, entries: []
+  });
+  const [section, setSection] = useState("apis");
+  const [apiSearch, setApiSearch] = useState("");
+  const [apiStatus, setApiStatus] = useState("all");
+  const [apiMethod, setApiMethod] = useState("all");
+  const [apiModule, setApiModule] = useState("all");
+  const [apiPage, setApiPage] = useState(1);
+  const [apiForm, setApiForm] = useState(emptyManagedApi);
+  const [consumerForm, setConsumerForm] = useState(emptyManagedConsumer);
+  const [editingApi, setEditingApi] = useState("");
+  const [editingConsumer, setEditingConsumer] = useState("");
+  const [notice, setNotice] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [issuedKey, setIssuedKey] = useState(null);
+  const apiPageSize = 10;
+  const filteredApis = apis.filter((item) => {
+    const query = apiSearch.trim().toLowerCase();
+    return (!query || [item.id, item.name, item.module, item.endpointPath, item.description]
+      .some((value) => String(value || "").toLowerCase().includes(query)))
+      && (apiStatus === "all" || item.status === apiStatus)
+      && (apiMethod === "all" || item.method === apiMethod)
+      && (apiModule === "all" || item.module === apiModule);
+  });
+  const apiPageCount = Math.max(1, Math.ceil(filteredApis.length / apiPageSize));
+  const visibleApis = filteredApis.slice((apiPage - 1) * apiPageSize, apiPage * apiPageSize);
+  const usageSummary = usage.summary || { total: usage.total || 0, successful: 0, failed: 0, successRate: 0 };
+
+  async function refresh() {
+    await Promise.all([reloadApis(), reloadConsumers(), reloadUsage()]);
+  }
+  function editApi(item) {
+    setApiForm({ ...emptyManagedApi, ...item });
+    setEditingApi(item.id);
+    setSection("apis");
+    setNotice("");
+  }
+  function editConsumer(item) {
+    setConsumerForm({
+      ...emptyManagedConsumer,
+      ...item,
+      allowedApiIds: item.allowedApiIds || [],
+      allowedMethods: item.allowedMethods || ["GET"]
+    });
+    setEditingConsumer(item.id);
+    setSection("consumers");
+    setNotice("");
+  }
+  async function saveApi(event) {
+    event.preventDefault(); setBusy(true); setError(""); setNotice("");
+    try {
+      await api(editingApi ? `/admin/apis/${editingApi}` : "/admin/apis", {
+        method: editingApi ? "PATCH" : "POST",
+        body: JSON.stringify(apiForm)
+      });
+      setApiForm(emptyManagedApi); setEditingApi("");
+      setNotice(editingApi ? "API updated." : "API registered.");
+      await refresh();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+  async function saveConsumer(event) {
+    event.preventDefault(); setBusy(true); setError(""); setNotice("");
+    try {
+      await api(editingConsumer ? `/admin/consumers/${editingConsumer}` : "/admin/consumers", {
+        method: editingConsumer ? "PATCH" : "POST",
+        body: JSON.stringify({ ...consumerForm, rateLimit: Number(consumerForm.rateLimit) })
+      });
+      setConsumerForm(emptyManagedConsumer); setEditingConsumer("");
+      setNotice(editingConsumer ? "API consumer updated." : "API consumer created. Issue a key to enable access.");
+      await refresh();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+  async function removeApi(item) {
+    if (!window.confirm(`Delete API "${item.name}"?`)) return;
+    setBusy(true); setError(""); setNotice("");
+    try {
+      await api(`/admin/apis/${item.id}`, { method: "DELETE" });
+      setNotice("API deleted."); await refresh();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+  async function removeConsumer(item) {
+    if (!window.confirm(`Delete consumer "${item.name}" and revoke its keys?`)) return;
+    setBusy(true); setError(""); setNotice("");
+    try {
+      await api(`/admin/consumers/${item.id}`, { method: "DELETE" });
+      setNotice("Consumer deleted and active keys revoked."); await refresh();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+  async function issueKey(item) {
+    setBusy(true); setError(""); setNotice(""); setIssuedKey(null);
+    try {
+      setIssuedKey(await api(`/admin/consumers/${item.id}/keys`, { method: "POST", body: "{}" }));
+      setNotice(`A new key was issued for ${item.name}. Copy it now; it will not be shown again.`);
+      await Promise.all([reloadConsumers(), reloadUsage()]);
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+  async function revokeKey(consumer, key) {
+    if (!window.confirm(`Revoke API key ${key.keyPrefix}…?`)) return;
+    setBusy(true); setError(""); setNotice("");
+    try {
+      await api(`/admin/consumers/${consumer.id}/keys/${key.id}`, { method: "DELETE" });
+      setNotice("API key revoked."); await reloadConsumers();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+  function toggleValue(values, value) {
+    return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
+  }
+
+  return <div className="page-content platform-page">
+    <Heading eyebrow="API LIFECYCLE & ACCESS CONTROL" title={<>APIs, managed <em>with care.</em></>} subtitle="Create and maintain API records, configure consumer access, rotate credentials, and review request activity." />
+    <div className="platform-tabs" role="tablist" aria-label="API management sections">
+      {[["apis", "API registry"], ["consumers", "Consumers & keys"], ["usage", "Request logs"]].map(([id, label]) =>
+        <button key={id} role="tab" aria-selected={section === id} className={`platform-tab ${section === id ? "active" : ""}`} onClick={() => setSection(id)}>{label}</button>)}
+      <a className="button button-outline button-small" href="/api/admin/apis/openapi.json" download="zyngram-campus-hub-openapi.json"><Download size={14} /> OpenAPI JSON</a>
+    </div>
+    <FormNotice error={error || apisError || consumersError || usageError} notice={notice} />
+    {issuedKey && <section className="panel permission-security-note"><KeyRound size={18} /><span><strong>Copy this key now — it is only shown once</strong><input aria-label="New API key" readOnly value={issuedKey.key} onFocus={(event) => event.target.select()} /><small>Key prefix: {issuedKey.keyPrefix}…</small></span><button className="button button-outline button-small" onClick={async () => { try { await navigator.clipboard.writeText(issuedKey.key); setNotice("API key copied."); } catch { setError("Clipboard access was denied. Select and copy the key manually."); } }}>Copy key</button></section>}
+
+    {section === "apis" && <>
+      <section className="panel coordinator-search-panel api-registry-filters">
+        <label htmlFor="api-registry-search"><Search size={16} /> Search registry<input id="api-registry-search" value={apiSearch} onChange={(event) => { setApiSearch(event.target.value); setApiPage(1); }} placeholder="Name, identifier, module, or endpoint" /></label>
+        <label>Status<select value={apiStatus} onChange={(event) => { setApiStatus(event.target.value); setApiPage(1); }}><option value="all">All statuses</option><option value="active">Active</option><option value="archived">Archived</option></select></label>
+        <label>Method<select value={apiMethod} onChange={(event) => { setApiMethod(event.target.value); setApiPage(1); }}><option value="all">All methods</option>{["GET", "POST", "PUT", "PATCH", "DELETE"].map((method) => <option key={method}>{method}</option>)}</select></label>
+        <label>Module<select value={apiModule} onChange={(event) => { setApiModule(event.target.value); setApiPage(1); }}><option value="all">All modules</option>{[...new Set(apis.map((item) => item.module))].sort().map((module) => <option key={module}>{module}</option>)}</select></label>
+        <span>{filteredApis.length} matching APIs</span>
+      </section>
+      <form className="panel platform-form" onSubmit={saveApi}>
+        <div className="panel-heading"><div><span className="eyebrow">{editingApi ? "UPDATE API RECORD" : "CREATE API RECORD"}</span><h3>{editingApi ? "Edit registered API" : "Register an API"}</h3></div><Code2 size={19} /></div>
+        <div className="platform-form-grid">
+          <label>Identifier<input maxLength="64" pattern="[a-z][a-z0-9_\\-]{2,63}" value={apiForm.id} disabled={Boolean(editingApi)} onChange={(event) => setApiForm({ ...apiForm, id: event.target.value })} required /></label>
+          <label>Display name<input maxLength="100" value={apiForm.name} onChange={(event) => setApiForm({ ...apiForm, name: event.target.value })} required /></label>
+          <label>Owning module<input maxLength="100" value={apiForm.module} onChange={(event) => setApiForm({ ...apiForm, module: event.target.value })} required /></label>
+          <label>Version<input maxLength="32" value={apiForm.version} onChange={(event) => setApiForm({ ...apiForm, version: event.target.value })} required /></label>
+          <label>Base URL<input value={apiForm.baseUrl} onChange={(event) => setApiForm({ ...apiForm, baseUrl: event.target.value })} required /></label>
+          <label>Endpoint path<input maxLength="180" value={apiForm.endpointPath} onChange={(event) => setApiForm({ ...apiForm, endpointPath: event.target.value })} placeholder="/example/:id" required /></label>
+          <label>HTTP method<select value={apiForm.method} onChange={(event) => setApiForm({ ...apiForm, method: event.target.value })}>{["GET", "POST", "PUT", "PATCH", "DELETE"].map((method) => <option key={method}>{method}</option>)}</select></label>
+          <label>Environment<select value={apiForm.environment} onChange={(event) => setApiForm({ ...apiForm, environment: event.target.value })}>{["development", "staging", "production"].map((environment) => <option key={environment}>{environment}</option>)}</select></label>
+          <label>Status<select value={apiForm.status} onChange={(event) => setApiForm({ ...apiForm, status: event.target.value })}><option value="active">Active</option><option value="archived">Archived</option></select></label>
+          <label>Authentication<select value={String(apiForm.authRequired)} onChange={(event) => setApiForm({ ...apiForm, authRequired: event.target.value === "true" })}><option value="true">Required</option><option value="false">Not required</option></select></label>
+          <label className="platform-form-wide">Description<textarea maxLength="600" value={apiForm.description} onChange={(event) => setApiForm({ ...apiForm, description: event.target.value })} required /></label>
+        </div>
+        <button className="button button-primary" disabled={busy}>{busy ? "Saving…" : editingApi ? "Save API changes" : "Create API"} <Check size={14} /></button>
+        {editingApi && <button type="button" className="button button-outline button-small" onClick={() => { setApiForm(emptyManagedApi); setEditingApi(""); }}>Cancel editing</button>}
+      </form>
+      <section className="panel coordinator-requests-panel">
+        <div className="panel-heading"><div><span className="eyebrow">REGISTERED ENDPOINTS</span><h3>{filteredApis.length} API records</h3></div><Code2 size={19} /></div>
+        {apisLoading ? <p>Loading APIs…</p> : visibleApis.map((item) => <article className="coordinator-request-card" key={item.id}>
+          <div className="coordinator-request-heading"><span><strong>{item.method} {item.baseUrl}{item.endpointPath}</strong><small>{item.name} · {item.module} · {item.version} · {item.environment}</small></span><StatusTag tone={item.status === "active" ? "green" : "orange"}>{item.status}</StatusTag></div>
+          <p>{item.description}</p><small>{item.authRequired ? "Authentication required" : "Public endpoint"}{item.isMock ? " · Demo endpoint" : ""}</small>
+          <div className="trainer-material-row"><button className="button button-outline button-small" onClick={() => editApi(item)}>Edit</button><button className="button button-outline button-small" disabled={busy} onClick={() => removeApi(item)}><Trash2 size={13} /> Delete</button></div>
+        </article>)}
+        {!apisLoading && !filteredApis.length && <Empty icon={Code2} title={apis.length ? "No APIs match these filters." : "No APIs registered yet."} text={apis.length ? "Change your search or filters to see other registered APIs." : "Create an API record above to begin managing it."} />}
+        {!apisLoading && filteredApis.length > apiPageSize && <nav className="api-pagination" aria-label="API registry pages">
+          <button className="button button-outline button-small" disabled={apiPage <= 1} onClick={() => setApiPage(apiPage - 1)}>Previous</button>
+          <span>Page {Math.min(apiPage, apiPageCount)} of {apiPageCount}</span>
+          <button className="button button-outline button-small" disabled={apiPage >= apiPageCount} onClick={() => setApiPage(apiPage + 1)}>Next</button>
+        </nav>}
+      </section>
+    </>}
+
+    {section === "consumers" && <>
+      <form className="panel platform-form" onSubmit={saveConsumer}>
+        <div className="panel-heading"><div><span className="eyebrow">{editingConsumer ? "UPDATE CONSUMER" : "CREATE CONSUMER"}</span><h3>{editingConsumer ? "Edit API consumer" : "Add an API consumer"}</h3></div><KeyRound size={19} /></div>
+        <div className="platform-form-grid">
+          <label>Consumer identifier<input maxLength="64" pattern="[a-z][a-z0-9_\\-]{2,63}" value={consumerForm.id} disabled={Boolean(editingConsumer)} onChange={(event) => setConsumerForm({ ...consumerForm, id: event.target.value })} required /></label>
+          <label>Name<input maxLength="100" value={consumerForm.name} onChange={(event) => setConsumerForm({ ...consumerForm, name: event.target.value })} required /></label>
+          <label>Description<input maxLength="600" value={consumerForm.description} onChange={(event) => setConsumerForm({ ...consumerForm, description: event.target.value })} /></label>
+          <label>Requests per minute<input type="number" min="1" max="10000" value={consumerForm.rateLimit} onChange={(event) => setConsumerForm({ ...consumerForm, rateLimit: event.target.value })} required /></label>
+          <label>Status<select value={consumerForm.status} onChange={(event) => setConsumerForm({ ...consumerForm, status: event.target.value })}><option value="active">Active</option><option value="suspended">Suspended</option><option value="revoked">Revoked</option></select></label>
+          <fieldset className="platform-form-wide"><legend>Allowed API-key demo endpoints</legend>{apis.filter((item) => item.isMock).map((item) => <label key={item.id}><input type="checkbox" checked={consumerForm.allowedApiIds.includes(item.id)} onChange={() => setConsumerForm({ ...consumerForm, allowedApiIds: toggleValue(consumerForm.allowedApiIds, item.id) })} /> {item.name} ({item.method})</label>)}<small>Consumer keys are currently enforced on these protected demo endpoints; other APIs continue to use Campus Hub session authentication.</small></fieldset>
+          <fieldset className="platform-form-wide"><legend>Allowed HTTP methods</legend>{["GET", "POST", "PUT", "PATCH", "DELETE"].map((method) => <label key={method}><input type="checkbox" checked={consumerForm.allowedMethods.includes(method)} onChange={() => setConsumerForm({ ...consumerForm, allowedMethods: toggleValue(consumerForm.allowedMethods, method) })} /> {method}</label>)}</fieldset>
+        </div>
+        <button className="button button-primary" disabled={busy || apisLoading}>{busy ? "Saving…" : editingConsumer ? "Save consumer changes" : "Create consumer"} <Check size={14} /></button>
+        {editingConsumer && <button type="button" className="button button-outline button-small" onClick={() => { setConsumerForm(emptyManagedConsumer); setEditingConsumer(""); }}>Cancel editing</button>}
+      </form>
+      <section className="panel coordinator-requests-panel">
+        <div className="panel-heading"><div><span className="eyebrow">INTEGRATION ACCESS</span><h3>{consumers.length} API consumers</h3></div><KeyRound size={19} /></div>
+        {consumersLoading ? <p>Loading consumers…</p> : consumers.map((consumer) => <article className="coordinator-request-card" key={consumer.id}>
+          <div className="coordinator-request-heading"><span><strong>{consumer.name}</strong><small>{consumer.id} · {consumer.rateLimit} requests/minute</small></span><StatusTag tone={consumer.status === "active" ? "green" : "orange"}>{consumer.status}</StatusTag></div>
+          <p>{consumer.description || "No description."}</p><small>APIs: {consumer.allowedApiIds.map((id) => apis.find((item) => item.id === id)?.name || id).join(", ")} · Methods: {consumer.allowedMethods.join(", ")}</small>
+          <div className="trainer-material-row"><button className="button button-outline button-small" disabled={busy || consumer.status !== "active"} onClick={() => issueKey(consumer)}><KeyRound size={13} /> Rotate / issue key</button><button className="button button-outline button-small" onClick={() => editConsumer(consumer)}>Edit</button><button className="button button-outline button-small" disabled={busy} onClick={() => removeConsumer(consumer)}><Trash2 size={13} /> Delete</button></div>
+          {(consumer.keys || []).map((key) => <div className="trainer-material-row" key={key.id}><span><small>{key.keyPrefix}… · {key.revokedAt ? `revoked ${new Date(key.revokedAt).toLocaleString()}` : "active"}</small></span>{!key.revokedAt && <button className="button button-outline button-small" disabled={busy} onClick={() => revokeKey(consumer, key)}><Trash2 size={13} /> Revoke</button>}</div>)}
+        </article>)}
+        {!consumersLoading && !consumers.length && <Empty icon={KeyRound} title="No consumers yet." text="Create a consumer and issue it a key to grant integration access." />}
+      </section>
+    </>}
+
+    {section === "usage" && <>
+      <div className="platform-stats-row api-usage-stats">
+        <article className="platform-stat"><span>Total API requests</span><strong>{usageSummary.total}</strong><small>Recorded consumer endpoint activity</small></article>
+        <article className="platform-stat"><span>Successful requests</span><strong>{usageSummary.successful}</strong><small>Responses below HTTP 400</small></article>
+        <article className="platform-stat"><span>Failed requests</span><strong>{usageSummary.failed}</strong><small>Authentication, permission, and service errors</small></article>
+        <article className="platform-stat"><span>Success rate</span><strong>{usageSummary.successRate}%</strong><small>Based on recorded request outcomes</small></article>
+      </div>
+      <section className="panel coordinator-requests-panel">
+      <div className="panel-heading"><div><span className="eyebrow">API REQUEST ACTIVITY</span><h3>{usage.total} recent requests</h3></div><button className="button button-outline button-small" onClick={reloadUsage}>Refresh</button></div>
+      {usageLoading ? <p>Loading API activity…</p> : usage.entries.map((entry) => <article className="coordinator-request-card" key={entry.id}>
+        <div className="coordinator-request-heading"><span><strong>{entry.method} {entry.endpoint}</strong><small>{entry.apiName} · {entry.consumerId || "unauthorized request"} · {new Date(entry.timestamp).toLocaleString()}</small></span><StatusTag tone={entry.statusCode < 400 ? "green" : "orange"}>{entry.statusCode}</StatusTag></div>
+        <small>{entry.durationMs} ms · {entry.outcome}</small>
+      </article>)}
+      {!usageLoading && !usage.entries.length && <Empty icon={Code2} title="No API requests yet." text="Protected demo endpoint activity will appear here." />}
+      </section>
+    </>}
   </div>;
 }
 

@@ -14,6 +14,7 @@ const platformCollectionNames = new Set([
   "lesson_progress", "quiz_attempts", "learning_paths", "gamification",
   "assignments", "assignment_submissions", "discussions", "notifications", "campus_state",
   "course_modules", "module_attempts", "topic_progress", "admin_audit_logs", "admin_settings",
+  "api_registry", "api_consumers", "api_keys", "api_usage_logs",
   "placement_companies", "placement_jobs", "placement_drives", "placement_profiles",
   "placement_applications", "placement_interviews", "placement_offers"
 ]);
@@ -130,6 +131,15 @@ export async function initializePlatformData(seeds) {
   await database.collection("notifications").createIndex({ userId: 1, read: 1, createdAt: -1 });
   await database.collection("events").createIndex({ date: 1, startTime: 1 });
   await database.collection("batches").createIndex({ courseId: 1, trainerId: 1 });
+  await database.collection("api_registry").createIndex({ id: 1 }, { unique: true });
+  await database.collection("api_registry").createIndex({ status: 1, method: 1, module: 1 });
+  await database.collection("api_consumers").createIndex({ id: 1 }, { unique: true });
+  await database.collection("api_consumers").createIndex({ status: 1 });
+  await database.collection("api_keys").createIndex({ keyHash: 1 }, { unique: true });
+  await database.collection("api_keys").createIndex({ consumerId: 1, revokedAt: 1 });
+  await database.collection("api_usage_logs").createIndex({ createdAt: -1 });
+  await database.collection("api_usage_logs").createIndex({ apiId: 1, createdAt: -1 });
+  await database.collection("api_usage_logs").createIndex({ consumerId: 1, createdAt: -1 });
 }
 
 export async function getPlatformItems(name, filter = {}, sort = { createdAt: -1 }) {
@@ -161,6 +171,11 @@ export async function createPlatformItem(name, item) {
 export async function updatePlatformItem(name, filter, update) {
   if (!platformCollectionNames.has(name)) throw new Error(`Unsupported platform collection: ${name}`);
   return database.collection(name).updateOne(filter, { $set: { ...update, updatedAt: new Date() } });
+}
+
+export async function deletePlatformItem(name, filter) {
+  if (!platformCollectionNames.has(name)) throw new Error(`Unsupported platform collection: ${name}`);
+  return database.collection(name).deleteOne(filter);
 }
 
 export async function incrementGamification(userId, points, badge) {

@@ -3,7 +3,7 @@ import { rm } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { MongoClient } from "mongodb";
@@ -81,12 +81,13 @@ async function stopServer(child) {
   });
 }
 
-async function request(baseUrl, endpoint, { method = "GET", body, cookie } = {}) {
+async function request(baseUrl, endpoint, { method = "GET", body, cookie, headers = {} } = {}) {
   const response = await fetch(`${baseUrl}${endpoint}`, {
     method,
     headers: {
       ...(body === undefined ? {} : { "content-type": "application/json" }),
-      ...(cookie ? { cookie } : {})
+      ...(cookie ? { cookie } : {}),
+      ...headers
     },
     body: body === undefined ? undefined : JSON.stringify(body)
   });
@@ -1168,6 +1169,108 @@ test("local API supports validated auth, role restrictions, editable profiles, C
     });
     assert.equal(moduleUpdate.status, 200);
 
+    const apiManagementUnauthenticated = await request(server.baseUrl, "/api/admin/apis");
+    assert.equal(apiManagementUnauthenticated.status, 401);
+    const apiManagementStudentDenied = await request(server.baseUrl, "/api/admin/apis", { cookie: registrationCookie });
+    assert.equal(apiManagementStudentDenied.status, 403);
+    const apiRegistry = await request(server.baseUrl, "/api/admin/apis", { cookie: adminLogin.cookie });
+    assert.ok(apiRegistry.result.some((item) => item.id === "api-demo-secure-profile"));
+    assert.ok(apiRegistry.result.some((item) => item.id === "api-courses-list"));
+    const managedApi = await request(server.baseUrl, "/api/admin/apis", {
+      method: "POST",
+      cookie: adminLogin.cookie,
+      body: {
+        id: "api-crud-test", name: "CRUD test endpoint", description: "Temporary API registry test.",
+        module: "Integration", baseUrl: "/api", endpointPath: "/integration/:recordId",
+        method: "GET", version: "v1", environment: "development", authRequired: true, status: "active"
+      }
+    });
+    assert.equal(managedApi.status, 201);
+    assert.equal(managedApi.result.isMock, undefined);
+    const duplicateManagedApi = await request(server.baseUrl, "/api/admin/apis", {
+      method: "POST", cookie: adminLogin.cookie, body: managedApi.result
+    });
+    assert.equal(duplicateManagedApi.status, 409);
+    const managedApiUpdate = await request(server.baseUrl, "/api/admin/apis/api-crud-test", {
+      method: "PATCH", cookie: adminLogin.cookie, body: { name: "Updated CRUD endpoint" }
+    });
+    assert.equal(managedApiUpdate.status, 200);
+    assert.equal(managedApiUpdate.result.name, "Updated CRUD endpoint");
+
+    const managedConsumer = await request(server.baseUrl, "/api/admin/consumers", {
+      method: "POST", cookie: adminLogin.cookie,
+      body: {
+        id: "integration-consumer", name: "Integration consumer", description: "Temporary API key test.",
+        allowedApiIds: ["api-demo-secure-profile"], allowedMethods: ["GET"], rateLimit: 1, status: "active"
+      }
+    });
+    assert.equal(managedConsumer.status, 201);
+    const issuedKey = await request(server.baseUrl, "/api/admin/consumers/integration-consumer/keys", {
+      method: "POST", cookie: adminLogin.cookie, body: {}
+    });
+    assert.equal(issuedKey.status, 201);
+    const storedKey = await client.db(temporaryDatabase).collection("api_keys").findOne({ consumerId: "integration-consumer" });
+    assert.equal(storedKey.keyHash, createHash("sha256").update(issuedKey.result.key).digest("hex"));
+    assert.equal(storedKey.keyHash.includes(issuedKey.result.key), false);
+    assert.equal((await request(server.baseUrl, "/api/demo/secure/profile")).status, 401);
+    assert.equal((await request(server.baseUrl, "/api/demo/secure/profile", {
+      headers: { "x-api-key": "invalid-test-key" }
+    })).status, 401);
+    assert.equal((await request(server.baseUrl, "/api/demo/secure/profile", {
+      headers: { "x-api-key": issuedKey.result.key }
+    })).status, 200);
+    assert.equal((await request(server.baseUrl, "/api/demo/secure/modules", {
+      headers: { "x-api-key": issuedKey.result.key }
+    })).status, 403);
+    assert.equal((await request(server.baseUrl, "/api/demo/secure/profile", {
+      headers: { "x-api-key": issuedKey.result.key }
+    })).status, 429);
+    const keyRotation = await request(server.baseUrl, "/api/admin/consumers/integration-consumer/keys", {
+      method: "POST", cookie: adminLogin.cookie, body: {}
+    });
+    assert.equal(keyRotation.status, 201);
+    assert.notEqual(keyRotation.result.key, issuedKey.result.key);
+    assert.equal((await request(server.baseUrl, "/api/demo/secure/profile", {
+      headers: { "x-api-key": issuedKey.result.key }
+    })).status, 401);
+    const apiUsage = await request(server.baseUrl, "/api/admin/api-usage", { cookie: adminLogin.cookie });
+    assert.ok(apiUsage.result.entries.some((entry) => entry.consumerId === "integration-consumer"));
+    assert.ok(apiUsage.result.summary.total >= 1);
+    assert.ok(apiUsage.result.summary.successful >= 1);
+    assert.ok(apiUsage.result.summary.failed >= 1);
+    const openApi = await request(server.baseUrl, "/api/admin/apis/openapi.json", { cookie: adminLogin.cookie });
+    assert.equal(openApi.status, 200);
+    assert.equal(openApi.result.paths["/demo/secure/profile"].get.security[0].apiKey.length, 0);
+    assert.equal(openApi.result.paths["/courses"].get.security[0].campusSession.length, 0);
+    assert.equal(openApi.result.paths["/integration/{recordId}"].get.parameters[0].name, "recordId");
+    assert.equal((await request(server.baseUrl, "/api/admin/apis/api-crud-test", {
+      method: "DELETE", cookie: adminLogin.cookie
+    })).status, 200);
+    assert.equal((await request(server.baseUrl, "/api/admin/apis/api-demo-secure-profile", {
+      method: "DELETE", cookie: adminLogin.cookie
+    })).status, 409);
+    assert.equal((await request(server.baseUrl, "/api/admin/consumers/integration-consumer", {
+      method: "PATCH", cookie: adminLogin.cookie, body: { status: "suspended" }
+    })).status, 200);
+    assert.equal((await request(server.baseUrl, "/api/demo/secure/profile", {
+      headers: { "x-api-key": keyRotation.result.key }
+    })).status, 403);
+    assert.equal((await request(server.baseUrl, "/api/admin/consumers/integration-consumer", {
+      method: "PATCH", cookie: adminLogin.cookie, body: { status: "active" }
+    })).status, 200);
+    assert.equal((await request(server.baseUrl, `/api/admin/consumers/integration-consumer/keys/${keyRotation.result.id}`, {
+      method: "DELETE", cookie: adminLogin.cookie
+    })).status, 200);
+    assert.equal((await request(server.baseUrl, "/api/demo/secure/profile", {
+      headers: { "x-api-key": keyRotation.result.key }
+    })).status, 401);
+    assert.equal((await request(server.baseUrl, "/api/admin/consumers/integration-consumer", {
+      method: "DELETE", cookie: adminLogin.cookie
+    })).status, 200);
+    assert.equal((await request(server.baseUrl, "/api/admin/apis/api-demo-secure-profile", {
+      method: "DELETE", cookie: adminLogin.cookie
+    })).status, 200);
+
     const secondStudentLogin = await request(server.baseUrl, "/api/auth/login", {
       method: "POST",
       body: { email: secondNamedStudent.result.email, password: "TestPass123", role: "student" }
@@ -1246,7 +1349,7 @@ test("local API supports validated auth, role restrictions, editable profiles, C
     assert.equal(mockAI.requests[0].authorization, "Bearer integration-test-only");
     assert.equal(mockAI.requests[0].body.model, "integration-model");
 
-    t.diagnostic("Verified administrator security and lifecycle, placement profiles, company/job/drive CRUD, applications, interviews, offers, reports, resume privacy, trainer workflows, coordinator authorization, and persistence.");
+    t.diagnostic("Verified administrator security and lifecycle, API registry and consumer CRUD, key hashing and rotation, rate limits, API usage logs, placement workflows, trainer/coordinator authorization, and persistence.");
   } finally {
     if (server) await stopServer(server.child);
     if (mockAI) await stopHttpServer(mockAI.server);

@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
 import {
   Activity, ArrowRight, ArrowUpRight, Award, BarChart3, Bell, BookOpen, Bot, BriefcaseBusiness, Building2, CalendarDays, Camera, Check, ChevronDown,
-  ChevronLeft, ChevronRight, CircleAlert, CircleHelp, CircleUserRound, Clock3, FileCheck2, GraduationCap, LayoutDashboard,
+  ChevronLeft, ChevronRight, CircleAlert, CircleCheck, CircleHelp, CircleUserRound, Clock3, FileCheck2, GraduationCap, LayoutDashboard,
   FileText, LogOut, Medal, Menu, MessageCircle, MoreHorizontal, Plus, Route, Search, Send, ShieldCheck, Sparkles, Target, Trash2, Upload,
   Users, X
 } from "lucide-react";
 import { api } from "./api.js";
 import {
-  AdminAuditPage, AdminCoursesPage, AdminPermissionsPage, AdminSettingsPage, AdminUsersPage,
+  AdminApiManagementPage, AdminAuditPage, AdminCoursesPage, AdminPermissionsPage, AdminSettingsPage, AdminUsersPage,
   AnalyticsPage, AssignmentsPage, AssistantPage, BatchesPage, CareerPage, EventsPage, PlacementOfficerPage,
   CommunityPage, GamificationPage, LearningHub, LearningPathPage, NotificationsPage, TrainerCoursesPage, TrainerReportsPage,
   ReportsPage, TimetablePage
@@ -274,6 +274,7 @@ function Sidebar({ page, setPage, user, onLogout, mobileOpen, closeMobile }) {
     ["support", "Requests & support", CircleHelp],
     ["reports", "Campus reports", BarChart3],
     ["adminAudit", "Audit logs", Clock3],
+    ["apiManagement", "API management", ShieldCheck],
     ["adminSettings", "System settings", ShieldCheck],
     ["profile", "My profile", CircleUserRound]
   ];
@@ -856,7 +857,7 @@ function Profile({ user, updateUser }) {
           <span className="profile-resume-copy"><strong>{user.resumeFileName || "No resume uploaded yet"}</strong><small>{user.resumeFileName ? "Private · only available to you" : "Upload a PDF resume to complete your profile"}</small></span>
           {user.resumeFileName && <a className="button button-outline button-small" href="/api/profile/assets/resume"><Upload size={14} /> Download</a>}
           {user.resumeFileName && <button className="icon-button" type="button" aria-label="Remove resume" disabled={Boolean(busyAsset)} onClick={() => removeAsset("resume")}><Trash2 size={15} /></button>}
-          <label className="button button-primary button-small">{busyAsset === "resume" ? "Uploading…" : user.resumeFileName ? "Replace" : "Upload resume"}<Upload size={14} /><input type="file" accept="application/pdf,.pdf" aria-label="Upload PDF resume" disabled={Boolean(busyAsset)} onChange={(event) => uploadAsset("resume", event)} /></label>
+          <label className="button button-primary button-small profile-upload-button">{busyAsset === "resume" ? "Uploading…" : user.resumeFileName ? "Replace" : "Upload resume"}<Upload size={14} /><input type="file" accept="application/pdf,.pdf" aria-label="Upload PDF resume" disabled={Boolean(busyAsset)} onChange={(event) => uploadAsset("resume", event)} /></label>
         </div>
       </section>
       {user.role === "student" && <section className="profile-assets panel">
@@ -930,7 +931,7 @@ export default function App() {
     notifications: "Notifications", announcements: "Announcements", support: user.role === "coordinator" ? "Requests & issues" : "Help & support",
     modules: user.role === "administrator" ? "Manage modules" : "Learning modules",
     adminUsers: "User management", adminPermissions: "Roles & permissions", adminCourses: "Course management",
-    adminAudit: "Audit logs", adminSettings: "System settings", coordinators: "Coordinator management",
+    adminAudit: "Audit logs", apiManagement: "API management", adminSettings: "System settings", coordinators: "Coordinator management",
     students: "Student management", trainers: "Trainer management",
     placementStudents: "Student profiles", placementCompanies: "Company management", placementJobs: "Jobs & internships",
     placementDrives: "Placement drives", placementApplications: "Applications & shortlisting",
@@ -970,6 +971,7 @@ export default function App() {
       {page === "adminPermissions" && user.role === "administrator" && <AdminPermissionsPage />}
       {page === "adminCourses" && user.role === "administrator" && <AdminCoursesPage />}
       {page === "adminAudit" && user.role === "administrator" && <AdminAuditPage />}
+      {page === "apiManagement" && user.role === "administrator" && <AdminApiManagementPage />}
       {page === "adminSettings" && user.role === "administrator" && <AdminSettingsPage />}
       {["placementStudents", "placementCompanies", "placementJobs", "placementDrives", "placementApplications", "placementInterviews", "placementOffers", "placementResources", "placementReports"].includes(page)
         && user.role === "placement_officer" && <PlacementOfficerPage key={page} section={page} setPage={changePage} />}
