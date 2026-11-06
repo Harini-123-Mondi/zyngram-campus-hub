@@ -3,6 +3,7 @@ import {
   Activity, ArrowRight, ArrowUpRight, Award, BarChart3, Bell, BookOpen, Bot, BriefcaseBusiness, Building2, CalendarDays, Camera, Check, ChevronDown,
   ChevronLeft, ChevronRight, CircleAlert, CircleCheck, CircleHelp, CircleUserRound, Clock3, FileCheck2, GraduationCap, LayoutDashboard,
   FileText, LogOut, Medal, Menu, MessageCircle, MoreHorizontal, Plus, Route, Search, Send, ShieldCheck, Sparkles, Target, Trash2, Upload, Download,
+  Compass, UsersRound,
   Users, X, QrCode
 } from "lucide-react";
 import { api } from "./api.js";
@@ -130,7 +131,13 @@ function Login({ onLogin, onRegister, busy, error }) {
   }
   return <main className="login-page">
     <section className="login-art"><Brand featured /><div className="login-art-copy"><span className="eyebrow light-eyebrow"><i className="live-dot" /> YOUR CAMPUS, IN GOOD COMPANY</span><h1>A little more<br />room to <em>grow.</em></h1><p>Learning, people, and all the little things that make campus feel like yours.</p></div><span className="art-sun" /><span className="art-orbit art-orbit-one" /><span className="art-orbit art-orbit-two" /><span className="art-spark spark-one">✳</span><span className="art-spark spark-two">✦</span></section>
-    <section className="login-form-side" id="hub-login"><div className={`login-form-wrap ${selectedRole ? "role-login-wrap" : "role-select-wrap"}`}><div className="mobile-brand"><Brand featured /></div>
+    <section className="login-form-side" id="hub-login"><section className="zyngram-quote-strip" aria-label="Zyngram Campus Hub motto"><div className="zyngram-quote-track"><div className="zyngram-quote-group"><span>ZYngram CAMPUS HUB</span><i>✳</i><strong>Learn with purpose. Build with confidence. Grow together.</strong><i>✦</i><span>YOUR NEXT CHAPTER STARTS HERE</span><i>✳</i></div><div className="zyngram-quote-group" aria-hidden="true"><span>ZYngram CAMPUS HUB</span><i>✳</i><strong>Learn with purpose. Build with confidence. Grow together.</strong><i>✦</i><span>YOUR NEXT CHAPTER STARTS HERE</span><i>✳</i></div></div></section>
+    <div className="login-explore"><span className="eyebrow">EXPLORE THE HUB</span><div className="login-explore-grid">
+      <a className="login-explore-card" href="#hub-login" aria-label="Learn: courses and personalized learning paths. Sign in to explore."><span className="login-explore-icon"><BookOpen size={17} /></span><span><strong>Learn</strong><small>Courses & learning paths</small></span></a>
+      <a className="login-explore-card" href="#hub-login" aria-label="Connect: campus events and community. Sign in to explore."><span className="login-explore-icon login-explore-connect"><UsersRound size={17} /></span><span><strong>Connect</strong><small>Events & campus community</small></span></a>
+      <a className="login-explore-card" href="#hub-login" aria-label="Grow: student portfolio and placements. Sign in to explore."><span className="login-explore-icon login-explore-grow"><Compass size={17} /></span><span><strong>Grow</strong><small>Portfolio & placements</small></span></a>
+    </div></div>
+    <div className={`login-form-wrap ${selectedRole ? "role-login-wrap" : "role-select-wrap"}`}><div className="mobile-brand"><Brand featured /></div>
       {!selectedRole && registering ? <>
         <button type="button" className="role-back-button" onClick={backToRoles}><ChevronLeft size={15} /> Back to sign in</button>
         {!createdAccount ? <>
@@ -166,7 +173,8 @@ function Login({ onLogin, onRegister, busy, error }) {
         {selectedRole.id !== "student" && <div className="demo-note"><ShieldCheck size={16} /><span>Use the initial password provided by your campus administrator. You will create a personal password after your first sign-in.</span></div>}
       </>}
       <p className="login-legal">ZYNGRAM CAMPUS HUB <span>·</span> A LEARNING DESIGN PROTOTYPE</p>
-    </div></section>
+    </div>
+    </section>
     <section className="public-hub" aria-label="About Zyngram Campus Hub">
       <div className="public-hub-inner">
         <div className="public-hub-heading"><span className="eyebrow">A CAMPUS BUILT AROUND GROWTH</span><h2>More than a place to learn.<br /><em>A place to find your next step.</em></h2><p>Zyngram Campus Hub brings learning, campus activities, and career preparation together in one supportive student experience.</p></div>
@@ -352,6 +360,12 @@ function Dashboard({ data, user, setPage }) {
   return <div className="page-content">
     <PageHeading eyebrow="WELCOME TO YOUR CAMPUS HUB" title={<>Welcome, {user.name.split(" ")[0]}<span className="heading-dot">!</span></>} subtitle="“Every small step brings you closer to something great.”" action={<button className="button button-outline" onClick={() => setPage("courses")}><CalendarDays size={16} /> This week <ChevronDown size={14} /></button>} />
     <section className="welcome-banner"><div className="banner-copy"><span className="eyebrow light-eyebrow">A NOTE FOR YOUR WEEK <span className="banner-spark">✳</span></span><h2>{learner ? <>You're closer than<br />you think.</> : <>Small steps make<br />big momentum.</>}</h2><p>{learner ? "One task, one question, one brave idea. You've got this." : "A little encouragement goes a long way. Your learners are making moves."}</p><button className="button button-light" onClick={() => setPage("tasks")}>{learner ? "See my next step" : "See learner progress"}<ArrowRight size={16} /></button></div><div className="banner-illustration" aria-hidden="true"><span className="banner-orbit orbit-a" /><span className="banner-orbit orbit-b" /><span className="banner-planet">✳</span><span className="banner-star star-a">✦</span><span className="banner-star star-b">✧</span><span className="banner-satellite">◌</span></div><span className="banner-index">A LITTLE AT A TIME · 01</span></section>
+    <section className="zyngram-quote-strip" aria-label="Zyngram Campus Hub motto">
+      <div className="zyngram-quote-track">
+        <div className="zyngram-quote-group"><span>ZYngram CAMPUS HUB</span><i>✳</i><strong>Learn with purpose. Build with confidence. Grow together.</strong><i>✦</i><span>YOUR NEXT CHAPTER STARTS HERE</span><i>✳</i></div>
+        <div className="zyngram-quote-group" aria-hidden="true"><span>ZYngram CAMPUS HUB</span><i>✳</i><strong>Learn with purpose. Build with confidence. Grow together.</strong><i>✦</i><span>YOUR NEXT CHAPTER STARTS HERE</span><i>✳</i></div>
+      </div>
+    </section>
     <div className="stats-grid">
       <article className="stat-card"><div className="stat-top"><span className="stat-icon lilac-icon"><BookOpen size={17} /></span><span className="stat-trend neutral">{learner ? "ENROLLED" : "CAMPUS"}</span></div><strong>{learner ? data.courses.length.toString().padStart(2, "0") : data.counts.learners.toString().padStart(2, "0")}</strong><span>{learner ? "Active courses" : "Active learners"}</span><small>{learner ? "Across your learning plan" : "Across all active batches"}</small></article>
       <article className="stat-card"><div className="stat-top"><span className="stat-icon orange-icon"><Clock3 size={17} /></span><span className="stat-trend neutral">THIS WEEK</span></div><strong>{(data.pendingAssignments ?? data.tasks.filter((task) => task.status !== "submitted").length).toString().padStart(2, "0")}</strong><span>{learner ? "Pending assignments" : "Sessions to review"}</span><small>{due ? `Next up · ${new Date(`${due.due}T12:00:00`).toLocaleDateString("en", { month: "short", day: "numeric" })}` : "You're all caught up"}</small></article>
