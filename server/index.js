@@ -15,6 +15,7 @@ import {
   validateManagedApi, validateManagedConsumer
 } from "./api-management.js";
 import { isAllowedRequestOrigin, isZinEmail, isZinId, safeText, validatePassword, validateRegistration } from "./validation.js";
+import { experienceFeatures, getExperienceFeature, validateExperienceFields } from "./experience-features.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataPath = process.env.CAMPUS_DATA_PATH || path.join(__dirname, "campus-data.json");
@@ -738,6 +739,64 @@ app.post("/api/auth/logout", asyncRoute(async (req, res) => {
 app.use("/api", authenticateSession);
 
 app.get("/api/auth/me", (req, res) => res.json({ user: req.user }));
+app.get("/api/experience/features", (req, res) => res.json(experienceFeatures
+  .filter((feature) => feature.viewRoles.includes(req.user.role))
+  .map((feature) => ({
+    ...feature,
+    canCreate: feature.createRoles.includes(req.user.role)
+  }))));
+app.get("/api/experience/records/:featureId", asyncRoute(async (req, res) => {
+  const feature = getExperienceFeature(req.params.featureId);
+  if (!feature) return res.status(404).json({ error: "That campus feature could not be found." });
+  if (!feature.viewRoles.includes(req.user.role)) return res.status(403).json({ error: "You do not have permission to view this feature." });
+  const filter = feature.publicListing
+    ? { featureId: feature.id, $or: [{ ownerId: req.user.id }, { visibility: "public" }] }
+    : { featureId: feature.id, ownerId: req.user.id };
+  return res.json(await database.getPlatformItems("experience_records", filter, { updatedAt: -1 }));
+}));
+app.post("/api/experience/records/:featureId", asyncRoute(async (req, res) => {
+  const feature = getExperienceFeature(req.params.featureId);
+  if (!feature) return res.status(404).json({ error: "That campus feature could not be found." });
+  if (!feature.createRoles.includes(req.user.role)) return res.status(403).json({ error: "You do not have permission to add an item to this feature." });
+  const result = validateExperienceFields(feature, req.body?.fields);
+  if (result.error) return res.status(400).json({ error: result.error });
+  const record = {
+    id: crypto.randomUUID(),
+    featureId: feature.id,
+    ownerId: req.user.id,
+    ownerName: req.user.name,
+    visibility: feature.publicListing ? "public" : "private",
+    fields: result.fields
+  };
+  await database.createPlatformItem("experience_records", record);
+  return res.status(201).json(record);
+}));
+app.patch("/api/experience/records/:featureId/:recordId", asyncRoute(async (req, res) => {
+  const feature = getExperienceFeature(req.params.featureId);
+  if (!feature) return res.status(404).json({ error: "That campus feature could not be found." });
+  if (!feature.viewRoles.includes(req.user.role)) return res.status(403).json({ error: "You do not have permission to update this feature." });
+  const result = validateExperienceFields(feature, req.body?.fields);
+  if (result.error) return res.status(400).json({ error: result.error });
+  const ownershipFilter = req.user.role === "administrator" ? {} : { ownerId: req.user.id };
+  const filter = { _id: req.params.recordId, featureId: feature.id, ...ownershipFilter };
+  const existing = await database.getPlatformItem("experience_records", filter);
+  if (!existing) return res.status(404).json({ error: "That item could not be found or you do not have permission to edit it." });
+  await database.updatePlatformItem("experience_records", filter, { fields: result.fields });
+  return res.json({ ...existing, fields: result.fields });
+}));
+app.delete("/api/experience/records/:featureId/:recordId", asyncRoute(async (req, res) => {
+  const feature = getExperienceFeature(req.params.featureId);
+  if (!feature) return res.status(404).json({ error: "That campus feature could not be found." });
+  if (!feature.viewRoles.includes(req.user.role)) return res.status(403).json({ error: "You do not have permission to delete items from this feature." });
+  const ownershipFilter = req.user.role === "administrator" ? {} : { ownerId: req.user.id };
+  const result = await database.deletePlatformItem("experience_records", {
+    _id: req.params.recordId,
+    featureId: feature.id,
+    ...ownershipFilter
+  });
+  if (!result.deletedCount) return res.status(404).json({ error: "That item could not be found or you do not have permission to delete it." });
+  return res.json({ ok: true });
+}));
 app.post("/api/auth/change-password", asyncRoute(async (req, res) => {
   const user = data.users.find((candidate) => candidate.id === req.user.id);
   if (!user || user.role === "student" || !user.mustChangePassword) {

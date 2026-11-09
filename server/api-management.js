@@ -198,6 +198,71 @@ export const initialManagedApis = [
     authRequired: true,
     status: "active",
     isMock: true
+  },
+  {
+    id: "api-experience-features",
+    name: "Career and campus feature catalog",
+    description: "Lists feature forms and creation permissions for the signed-in campus role.",
+    module: "Career & Campus Tools",
+    baseUrl: "/api",
+    endpointPath: "/experience/features",
+    method: "GET",
+    version: "v1",
+    environment: "development",
+    authRequired: true,
+    status: "active"
+  },
+  {
+    id: "api-experience-records-list",
+    name: "Career and campus records",
+    description: "Lists shared posts and records visible to the signed-in user for one feature.",
+    module: "Career & Campus Tools",
+    baseUrl: "/api",
+    endpointPath: "/experience/records/:featureId",
+    method: "GET",
+    version: "v1",
+    environment: "development",
+    authRequired: true,
+    status: "active"
+  },
+  {
+    id: "api-experience-records-create",
+    name: "Create career and campus record",
+    description: "Creates a validated feature record for the signed-in user.",
+    module: "Career & Campus Tools",
+    baseUrl: "/api",
+    endpointPath: "/experience/records/:featureId",
+    method: "POST",
+    version: "v1",
+    environment: "development",
+    authRequired: true,
+    status: "active"
+  },
+  {
+    id: "api-experience-records-update",
+    name: "Update career and campus record",
+    description: "Updates an owned feature record or a record managed by an administrator.",
+    module: "Career & Campus Tools",
+    baseUrl: "/api",
+    endpointPath: "/experience/records/:featureId/:recordId",
+    method: "PATCH",
+    version: "v1",
+    environment: "development",
+    authRequired: true,
+    status: "active"
+  },
+  {
+    id: "api-experience-records-delete",
+    name: "Delete career and campus record",
+    description: "Deletes an owned feature record or a record managed by an administrator.",
+    module: "Career & Campus Tools",
+    baseUrl: "/api",
+    endpointPath: "/experience/records/:featureId/:recordId",
+    method: "DELETE",
+    version: "v1",
+    environment: "development",
+    authRequired: true,
+    status: "active"
   }
 ];
 

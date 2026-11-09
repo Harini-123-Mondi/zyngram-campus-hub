@@ -15,6 +15,7 @@ import {
 } from "./Platform.jsx";
 import QrScanner from "./QrScanner.jsx";
 import { StudentPortfolio, StudentRecommendations } from "./StudentFeatures.jsx";
+import ExperienceHub from "./ExperienceHub.jsx";
 
 const roleNames = { student: "Student", trainer: "Trainer", coordinator: "Coordinator", placement_officer: "Placement Officer", administrator: "Administrator" };
 const navItems = [
@@ -314,6 +315,7 @@ function Sidebar({ page, setPage, user, onLogout, mobileOpen, closeMobile }) {
       ? placementNavItems
     : navItems.filter(([id]) => rolePages[id]?.includes(user.role));
   if (user.role === "administrator") visibleItems.push(["modules", "Manage modules", BookOpen]);
+  visibleItems.push(["experience", "Career & campus tools", Sparkles]);
   return <><button className={`mobile-scrim ${mobileOpen ? "scrim-open" : ""}`} aria-label="Close navigation" onClick={closeMobile} /><aside className={`sidebar ${mobileOpen ? "sidebar-open" : ""}`}><Brand />
     <div className="workspace-switch"><span className="workspace-icon">Z</span><span><strong>Zyngram Campus</strong><small>Learning space</small></span><ChevronDown size={15} /></div>
     <div className="nav-caption">WORKSPACE</div><nav className="nav-list" aria-label="Main navigation">{visibleItems.map(([id, label, Icon]) => <button key={id} className={`nav-link ${page === id ? "active" : ""}`} onClick={() => { setPage(id); closeMobile(); }}><Icon size={18} strokeWidth={1.8} /><span>{label}</span>{id === "tasks" && user.role === "student" && <span className="nav-count">{user.pendingAssignments || ""}</span>}</button>)}</nav>
@@ -996,7 +998,8 @@ export default function App() {
     placementDrives: "Placement drives", placementApplications: "Applications & shortlisting",
     placementInterviews: "Interview scheduling", placementOffers: "Selection & offers",
     placementResources: "Resume & career preparation", placementReports: "Placement reports",
-    requests: "Requests & issues", reports: user.role === "trainer" ? "Student progress" : "Campus reports", design: "Design model", profile: "My profile"
+    requests: "Requests & issues", reports: user.role === "trainer" ? "Student progress" : "Campus reports", design: "Design model", profile: "My profile",
+    experience: "Career & campus tools"
   };
   const changePage = (next) => { setPage(next); setError(""); };
   return <div className="app-shell">
@@ -1025,6 +1028,7 @@ export default function App() {
       {page === "community" && <CommunityPage user={user} />}
       {page === "gamification" && <GamificationPage />}
       {page === "career" && <CareerPage user={user} courses={data.courses} />}
+      {page === "experience" && <ExperienceHub user={user} />}
       {page === "notifications" && <NotificationsPage />}
       {page === "adminUsers" && user.role === "administrator" && <AdminUsersPage />}
       {page === "adminPermissions" && user.role === "administrator" && <AdminPermissionsPage />}

@@ -16,7 +16,7 @@ const platformCollectionNames = new Set([
   "course_modules", "module_attempts", "topic_progress", "admin_audit_logs", "admin_settings",
   "api_registry", "api_consumers", "api_keys", "api_usage_logs", "student_portfolios", "checkin_tokens", "user_sessions",
   "placement_companies", "placement_jobs", "placement_drives", "placement_profiles",
-  "placement_applications", "placement_interviews", "placement_offers"
+  "placement_applications", "placement_interviews", "placement_offers", "experience_records"
 ]);
 const canonicalStaffEmails = new Map([
   ["u-trainer", "trainer@zyngram.com"],
@@ -127,6 +127,8 @@ export async function initializePlatformData(seeds) {
   await database.collection("topic_progress").createIndex({ userId: 1, topicId: 1 }, { unique: true });
   await database.collection("placement_applications").createIndex({ studentId: 1, opportunityKey: 1 }, { unique: true, partialFilterExpression: { opportunityKey: { $exists: true } } });
   await database.collection("placement_offers").createIndex({ applicationId: 1 }, { unique: true });
+  await database.collection("experience_records").createIndex({ featureId: 1, createdAt: -1 });
+  await database.collection("experience_records").createIndex({ ownerId: 1, featureId: 1, createdAt: -1 });
   await database.collection("discussions").createIndex({ createdAt: -1 });
   await database.collection("notifications").createIndex({ userId: 1, read: 1, createdAt: -1 });
   await database.collection("events").createIndex({ date: 1, startTime: 1 });

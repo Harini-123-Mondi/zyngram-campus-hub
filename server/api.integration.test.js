@@ -279,6 +279,40 @@ test("local API supports validated auth, role restrictions, editable profiles, C
       body: { email: "student@zyngram.demo", password: "learn123", role: "student" }
     });
     assert.equal(courseLogin.status, 200);
+    const experienceCatalog = await request(server.baseUrl, "/api/experience/features", { cookie: courseLogin.cookie });
+    assert.equal(experienceCatalog.status, 200);
+    assert.equal(experienceCatalog.result.length, 29);
+    assert.ok(!experienceCatalog.result.some((feature) => feature.id === "lead-management"));
+    const privateCareerRecord = await request(server.baseUrl, "/api/experience/records/job-application-tracker", {
+      method: "POST",
+      cookie: courseLogin.cookie,
+      body: { fields: { title: "Campus engineer", role: "Software Engineer", appliedOn: "2026-11-09", status: "Applied" } }
+    });
+    assert.equal(privateCareerRecord.status, 201);
+    const anotherStudentsCareerRecords = await request(server.baseUrl, "/api/experience/records/job-application-tracker", {
+      cookie: registrationCookie
+    });
+    assert.deepEqual(anotherStudentsCareerRecords.result, []);
+    const unauthorizedCareerEdit = await request(server.baseUrl, `/api/experience/records/job-application-tracker/${privateCareerRecord.result.id}`, {
+      method: "PATCH",
+      cookie: registrationCookie,
+      body: { fields: { title: "Changed", role: "Software Engineer", appliedOn: "2026-11-09", status: "Applied" } }
+    });
+    assert.equal(unauthorizedCareerEdit.status, 404);
+    const sharedAchievement = await request(server.baseUrl, "/api/experience/records/achievement-wall", {
+      method: "POST",
+      cookie: courseLogin.cookie,
+      body: { fields: { title: "Campus hackathon", description: "Built and presented a project." } }
+    });
+    assert.equal(sharedAchievement.status, 201);
+    const sharedAchievements = await request(server.baseUrl, "/api/experience/records/achievement-wall", { cookie: registrationCookie });
+    assert.ok(sharedAchievements.result.some((record) => record.id === sharedAchievement.result.id));
+    const studentLeadAccess = await request(server.baseUrl, "/api/experience/records/lead-management", {
+      method: "POST",
+      cookie: courseLogin.cookie,
+      body: { fields: { title: "Unapproved lead", status: "New enquiry" } }
+    });
+    assert.equal(studentLeadAccess.status, 403);
     const upcomingEvents = await request(server.baseUrl, "/api/events", { cookie: courseLogin.cookie });
     assert.ok(upcomingEvents.result.length >= 3);
     assert.ok(upcomingEvents.result.every((event) => event.date >= new Date().toISOString().slice(0, 10)));
@@ -1262,6 +1296,7 @@ test("local API supports validated auth, role restrictions, editable profiles, C
     const apiRegistry = await request(server.baseUrl, "/api/admin/apis", { cookie: adminLogin.cookie });
     assert.ok(apiRegistry.result.some((item) => item.id === "api-demo-secure-profile"));
     assert.ok(apiRegistry.result.some((item) => item.id === "api-courses-list"));
+    assert.ok(apiRegistry.result.some((item) => item.id === "api-experience-records-create"));
     const managedApi = await request(server.baseUrl, "/api/admin/apis", {
       method: "POST",
       cookie: adminLogin.cookie,
